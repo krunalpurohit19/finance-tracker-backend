@@ -33,7 +33,7 @@ public class FinancialAccount {
     @Column(name = "class", nullable = false, length = 10)
     private AccountClass accountClass;
 
-    @Column(nullable = false, length = 3)
+    @Column(nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String currency;
 
     @Column(name = "opening_balance", nullable = false, precision = 18, scale = 4)

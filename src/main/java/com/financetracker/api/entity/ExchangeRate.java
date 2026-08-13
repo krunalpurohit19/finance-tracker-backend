@@ -21,10 +21,10 @@ public class ExchangeRate {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @Column(name = "from_currency", nullable = false, length = 3)
+    @Column(name = "from_currency", nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String fromCurrency;
 
-    @Column(name = "to_currency", nullable = false, length = 3)
+    @Column(name = "to_currency", nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String toCurrency;
 
     @Column(nullable = false, precision = 18, scale = 8)

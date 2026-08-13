@@ -34,6 +34,7 @@ public class TransactionService {
         this.settingsRepo = settingsRepo;
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Object> list(String userId, Map<String, String> query) {
         TransactionType type = query.containsKey("type") ? TransactionType.valueOf(query.get("type")) : null;
         String accountId = query.get("accountId");
@@ -56,6 +57,7 @@ public class TransactionService {
         return result;
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Object> get(String userId, String id) {
         return toMap(findOrThrow(userId, id));
     }
@@ -203,10 +205,14 @@ public class TransactionService {
         m.put("baseCurrency", tx.getBaseCurrency());
         m.put("fxRate", tx.getFxRate().toPlainString());
         m.put("accountId", tx.getAccount().getId());
+        m.put("accountName", tx.getAccount().getName());
         m.put("transferAccountId", tx.getTransferAccount() != null ? tx.getTransferAccount().getId() : null);
+        m.put("transferAccountName", tx.getTransferAccount() != null ? tx.getTransferAccount().getName() : null);
         m.put("transferAmount", tx.getTransferAmount() != null ? tx.getTransferAmount().toPlainString() : null);
         m.put("transferCurrency", tx.getTransferCurrency());
         m.put("categoryId", tx.getCategory() != null ? tx.getCategory().getId() : null);
+        m.put("categoryName", tx.getCategory() != null ? tx.getCategory().getName() : null);
+        m.put("color", tx.getCategory() != null ? tx.getCategory().getColor() : null);
         m.put("occurredOn", tx.getOccurredOn().toString());
         m.put("merchant", tx.getMerchant());
         m.put("notes", tx.getNotes());

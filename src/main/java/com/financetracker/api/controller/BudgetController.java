@@ -30,6 +30,7 @@ public class BudgetController {
     }
 
     @GetMapping
+    @Transactional(readOnly = true)
     public ResponseEntity<ApiEnvelope.Success<List<Map<String, Object>>>> list(@RequestParam(required = false) String month) {
         String userId = SecurityUtils.currentUserId();
         YearMonth ym = month != null ? YearMonth.parse(month) : YearMonth.now();
@@ -40,14 +41,35 @@ public class BudgetController {
         List<Map<String, Object>> result = budgets.stream().map(b -> {
             BigDecimal spent = txRepo.sumExpenseForBudget(userId, b.getCategory() != null ? b.getCategory().getId() : null, start, end);
             Map<String, Object> m = toMap(b);
+            
+            BigDecimal remaining = b.getAmount().subtract(spent);
             m.put("spent", spent.toPlainString());
-            m.put("remaining", b.getAmount().subtract(spent).toPlainString());
+            m.put("remaining", remaining.toPlainString());
+            
+            m.put("categoryName", b.getCategory() != null ? b.getCategory().getName() : "Overall Budget");
+            m.put("color", b.getCategory() != null ? b.getCategory().getColor() : null);
+            m.put("month", ym.toString());
+            
+            Double percentUsed = null;
+            String status = "OK";
+            if (b.getAmount().compareTo(BigDecimal.ZERO) > 0) {
+                percentUsed = spent.divide(b.getAmount(), 4, java.math.RoundingMode.HALF_UP).multiply(new BigDecimal("100")).doubleValue();
+                if (percentUsed >= 100.0) {
+                    status = "EXCEEDED";
+                } else if (percentUsed >= 85.0) {
+                    status = "NEAR_LIMIT";
+                }
+            }
+            m.put("percentUsed", percentUsed);
+            m.put("status", status);
+            
             return m;
         }).toList();
         return ResponseEntity.ok(new ApiEnvelope.Success<>(result));
     }
 
     @GetMapping("/history")
+    @Transactional(readOnly = true)
     public ResponseEntity<ApiEnvelope.Success<List<Map<String, Object>>>> history(
             @RequestParam(defaultValue = "6") int months, @RequestParam(required = false) String categoryId) {
         String userId = SecurityUtils.currentUserId();

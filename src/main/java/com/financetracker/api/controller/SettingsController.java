@@ -8,6 +8,8 @@ import com.financetracker.api.exception.ApiException;
 import com.financetracker.api.repository.UserRepository;
 import com.financetracker.api.repository.UserSettingsRepository;
 import com.financetracker.api.security.SecurityUtils;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +26,9 @@ public class SettingsController {
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
 
+    @PersistenceContext
+    private EntityManager em;
+
     public SettingsController(UserSettingsRepository settingsRepo, UserRepository userRepo,
                                PasswordEncoder passwordEncoder) {
         this.settingsRepo = settingsRepo;
@@ -38,13 +43,33 @@ public class SettingsController {
         UserSettings s = settingsRepo.findById(userId).orElseThrow();
 
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("user", Map.of("id", user.getId(), "name", user.getName(), "email", user.getEmail()));
-        data.put("baseCurrency", s.getBaseCurrency());
-        data.put("locale", s.getLocale());
-        data.put("timezone", s.getTimezone());
-        data.put("dateFormat", s.getDateFormat());
-        data.put("theme", s.getTheme().name());
-        data.put("weekStartsOn", s.getWeekStartsOn());
+        
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("id", user.getId());
+        profile.put("name", user.getName());
+        profile.put("email", user.getEmail());
+        profile.put("createdAt", user.getCreatedAt().toString());
+        data.put("profile", profile);
+
+        Map<String, Object> prefs = new LinkedHashMap<>();
+        prefs.put("baseCurrency", s.getBaseCurrency());
+        prefs.put("locale", s.getLocale());
+        prefs.put("timezone", s.getTimezone());
+        prefs.put("dateFormat", s.getDateFormat());
+        prefs.put("theme", s.getTheme().name());
+        prefs.put("weekStartsOn", s.getWeekStartsOn());
+        data.put("preferences", prefs);
+
+        Map<String, Object> counts = new LinkedHashMap<>();
+        counts.put("accounts", em.createQuery("SELECT COUNT(a) FROM FinancialAccount a WHERE a.user.id = :uid AND a.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("categories", em.createQuery("SELECT COUNT(c) FROM Category c WHERE c.user.id = :uid AND c.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("transactions", em.createQuery("SELECT COUNT(t) FROM Transaction t WHERE t.user.id = :uid AND t.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("budgets", em.createQuery("SELECT COUNT(b) FROM Budget b WHERE b.user.id = :uid AND b.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("goals", em.createQuery("SELECT COUNT(g) FROM SavingsGoal g WHERE g.user.id = :uid AND g.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("recurring", em.createQuery("SELECT COUNT(r) FROM RecurringTransaction r WHERE r.user.id = :uid AND r.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        counts.put("exchangeRates", em.createQuery("SELECT COUNT(e) FROM ExchangeRate e WHERE e.user.id = :uid AND e.deletedAt IS NULL", Long.class).setParameter("uid", userId).getSingleResult());
+        data.put("counts", counts);
+
         return ResponseEntity.ok(new ApiEnvelope.Success<>(data));
     }
 

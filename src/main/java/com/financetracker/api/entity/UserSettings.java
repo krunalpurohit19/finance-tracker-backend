@@ -16,7 +16,7 @@ public class UserSettings {
     @Column(name = "user_id", length = 36)
     private String userId;
 
-    @Column(name = "base_currency", nullable = false, length = 3)
+    @Column(name = "base_currency", nullable = false, length = 3, columnDefinition = "CHAR(3)")
     @Builder.Default
     private String baseCurrency = "INR";
 

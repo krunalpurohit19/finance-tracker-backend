@@ -33,7 +33,7 @@ public class RecurringTransaction {
     @Column(nullable = false, precision = 18, scale = 4)
     private BigDecimal amount;
 
-    @Column(nullable = false, length = 3)
+    @Column(nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String currency;
 
     @ManyToOne(fetch = FetchType.LAZY)

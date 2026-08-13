@@ -34,7 +34,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
         WHERE t.user.id = :userId AND t.deletedAt IS NULL
           AND t.occurredOn >= :from AND t.occurredOn <= :to
     """)
-    Object[] sumIncomeAndExpense(String userId, LocalDate from, LocalDate to);
+    List<Object[]> sumIncomeAndExpense(String userId, LocalDate from, LocalDate to);
 
     @Query("""
         SELECT t.category.id, COALESCE(SUM(t.baseAmount), 0)
@@ -82,4 +82,27 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
           AND t.deletedAt IS NULL
     """)
     BigDecimal computeAccountMovement(String accountId);
+
+    @Query("""
+        SELECT t.merchant, COALESCE(SUM(t.baseAmount), 0), COUNT(t)
+        FROM Transaction t
+        WHERE t.user.id = :userId AND t.type = 'EXPENSE' AND t.deletedAt IS NULL
+          AND t.merchant IS NOT NULL AND TRIM(t.merchant) != ''
+          AND t.occurredOn >= :from AND t.occurredOn <= :to
+        GROUP BY t.merchant
+        ORDER BY SUM(t.baseAmount) DESC
+    """)
+    List<Object[]> topMerchants(String userId, LocalDate from, LocalDate to, Pageable pageable);
+
+    @Query("""
+        SELECT t.account.id,
+               COALESCE(SUM(CASE WHEN t.type = 'INCOME' THEN t.baseAmount ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN t.type = 'EXPENSE' THEN t.baseAmount ELSE 0 END), 0),
+               COUNT(t)
+        FROM Transaction t
+        WHERE t.user.id = :userId AND t.deletedAt IS NULL
+          AND t.occurredOn >= :from AND t.occurredOn <= :to
+        GROUP BY t.account.id
+    """)
+    List<Object[]> sumByAccount(String userId, LocalDate from, LocalDate to);
 }

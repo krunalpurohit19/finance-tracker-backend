@@ -31,14 +31,14 @@ public class Transaction {
     @Column(nullable = false, precision = 18, scale = 4)
     private BigDecimal amount;
 
-    @Column(nullable = false, length = 3)
+    @Column(nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String currency;
 
     /** Same amount expressed in the user's base currency. */
     @Column(name = "base_amount", nullable = false, precision = 18, scale = 4)
     private BigDecimal baseAmount;
 
-    @Column(name = "base_currency", nullable = false, length = 3)
+    @Column(name = "base_currency", nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String baseCurrency;
 
     @Column(name = "fx_rate", nullable = false, precision = 18, scale = 8)
@@ -56,7 +56,7 @@ public class Transaction {
     @Column(name = "transfer_amount", precision = 18, scale = 4)
     private BigDecimal transferAmount;
 
-    @Column(name = "transfer_currency", length = 3)
+    @Column(name = "transfer_currency", length = 3, columnDefinition = "CHAR(3)")
     private String transferCurrency;
 
     @ManyToOne(fetch = FetchType.LAZY)

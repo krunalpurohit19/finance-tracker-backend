@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: finance_app_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev
+      MYSQL_DATABASE: finance_app
+      MYSQL_USER: finance
+      MYSQL_PASSWORD: finance_local_dev
+    ports:
+      - "3306:3306"
+    volumes:
+      - finance_mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "finance", "-pfinance_local_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  finance_mysqldata:

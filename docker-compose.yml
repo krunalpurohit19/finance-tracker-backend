@@ -9,7 +9,7 @@ services:
       MYSQL_USER: finance
       MYSQL_PASSWORD: finance_local_dev
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - finance_mysqldata:/var/lib/mysql
     healthcheck:

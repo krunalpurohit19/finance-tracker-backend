@@ -3,7 +3,7 @@ spring:
     name: finance-tracker-api
 
   datasource:
-    url: jdbc:mysql://localhost:3306/finance_app?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    url: jdbc:mysql://localhost:3307/finance_app?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     username: finance
     password: finance_local_dev
     driver-class-name: com.mysql.cj.jdbc.Driver

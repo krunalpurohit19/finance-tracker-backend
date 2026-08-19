@@ -100,6 +100,12 @@
             <version>8.10.1</version>
         </dependency>
 
+        <!-- Caffeine Cache (To prevent OOM in Rate Limiter) -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -12,15 +12,20 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private final Map<String, Bucket> cache = new ConcurrentHashMap<>();
+    // Use Caffeine cache to automatically evict old IPs and prevent OutOfMemory (OOM) attacks
+    private final Cache<String, Bucket> cache = Caffeine.newBuilder()
+            .expireAfterAccess(Duration.ofMinutes(5)) // Evict after 5 minutes of inactivity
+            .maximumSize(10_000) // Keep at most 10,000 IPs in memory
+            .build();
+            
     private final ObjectMapper objectMapper;
 
     public RateLimitFilter(ObjectMapper objectMapper) {
@@ -28,7 +33,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     private Bucket resolveBucket(String ip) {
-        return cache.computeIfAbsent(ip, this::newBucket);
+        return cache.get(ip, this::newBucket);
     }
 
     private Bucket newBucket(String ip) {

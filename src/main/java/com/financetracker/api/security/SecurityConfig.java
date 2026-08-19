@@ -26,10 +26,12 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
+    private final RateLimitFilter rateLimitFilter;
     private final ObjectMapper objectMapper;
 
-    public SecurityConfig(JwtAuthFilter jwtAuthFilter, ObjectMapper objectMapper) {
+    public SecurityConfig(JwtAuthFilter jwtAuthFilter, RateLimitFilter rateLimitFilter, ObjectMapper objectMapper) {
         this.jwtAuthFilter = jwtAuthFilter;
+        this.rateLimitFilter = rateLimitFilter;
         this.objectMapper = objectMapper;
     }
 
@@ -58,18 +60,20 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated()
             )
+            .addFilterBefore(rateLimitFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
 
     /**
-     * Argon2id encoder matching the original Better Auth configuration:
-     * memoryCost = 19456 KiB, timeCost = 2, parallelism = 1.
+     * Argon2id encoder:
+     * saltLength = 16, hashLength = 32, parallelism = 1
+     * memoryCost = 65536 KiB (64MB), timeCost = 3
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new Argon2PasswordEncoder(16, 32, 1, 19456, 2);
+        return new Argon2PasswordEncoder(16, 32, 1, 65536, 3);
     }
 
     @Bean
@@ -80,10 +84,19 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+        
+        // Use an environment variable for allowed origins, defaulting to typical dev ports
+        String allowedOriginsStr = System.getenv("APP_CORS_ORIGINS");
+        if (allowedOriginsStr != null && !allowedOriginsStr.isEmpty()) {
+            config.setAllowedOrigins(List.of(allowedOriginsStr.split(",")));
+        } else {
+            // Default safe list for local development
+            config.setAllowedOrigins(List.of("http://localhost:8081", "http://localhost:3000"));
+        }
+        
         config.setAllowedMethods(List.of("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
-        config.setAllowCredentials(true);
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept"));
+        config.setAllowCredentials(false); // Disable credentials since we use Bearer tokens
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

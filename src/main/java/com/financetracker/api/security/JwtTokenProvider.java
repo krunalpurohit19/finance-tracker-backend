@@ -20,6 +20,11 @@ public class JwtTokenProvider {
             @Value("${app.jwt.secret}") String secret,
             @Value("${app.jwt.access-token-expiration-ms}") long accessTokenExpirationMs,
             @Value("${app.jwt.refresh-token-expiration-ms}") long refreshTokenExpirationMs) {
+        
+        if (secret == null || secret.isBlank() || secret.length() < 32 || secret.equals("${JWT_SECRET}")) {
+            throw new IllegalStateException("JWT_SECRET environment variable is missing or less than 32 characters. Cannot start securely.");
+        }
+        
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.accessTokenExpirationMs = accessTokenExpirationMs;
         this.refreshTokenExpirationMs = refreshTokenExpirationMs;

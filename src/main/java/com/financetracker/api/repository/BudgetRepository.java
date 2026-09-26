@@ -13,11 +13,11 @@ public interface BudgetRepository extends JpaRepository<Budget, String> {
 
     /** All budgets effective for a given month (effectiveFrom <= monthEnd AND (effectiveTo IS NULL OR effectiveTo >= monthStart)). */
     @Query("""
-        SELECT b FROM Budget b
+        SELECT b FROM Budget b LEFT JOIN FETCH b.category c
         WHERE b.user.id = :userId AND b.deletedAt IS NULL
           AND b.effectiveFrom <= :monthEnd
           AND (b.effectiveTo IS NULL OR b.effectiveTo >= :monthStart)
-        ORDER BY b.category.id NULLS FIRST
+        ORDER BY c.id NULLS FIRST
     """)
     List<Budget> findEffectiveForMonth(String userId, LocalDate monthStart, LocalDate monthEnd);
 

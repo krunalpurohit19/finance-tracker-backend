@@ -3,6 +3,7 @@ package com.financetracker.api.controller;
 import com.financetracker.api.entity.Budget;
 import com.financetracker.api.entity.Category;
 import com.financetracker.api.entity.enums.CategoryKind;
+import com.financetracker.api.entity.enums.TransactionType;
 import com.financetracker.api.repository.BudgetRepository;
 import com.financetracker.api.repository.CategoryRepository;
 import com.financetracker.api.repository.TransactionRepository;
@@ -82,16 +83,16 @@ class BudgetApiContractTest extends WebSliceTest {
                 budget("b-food", food, "500.0000", SEP_1, LocalDate.of(2026, 12, 1)),
                 budget("b-rent", rent, "1000.0000", SEP_1, null),
                 budget("b-fun", fun, "0.0000", SEP_1, null)));
-        when(txRepo.sumExpenseForBudget(USER_ID, null, SEP_1, SEP_30)).thenReturn(new BigDecimal("900.0000"));
-        when(txRepo.sumExpenseForBudget(USER_ID, "c-food", SEP_1, SEP_30)).thenReturn(new BigDecimal("450.0000"));
-        when(txRepo.sumExpenseForBudget(USER_ID, "c-rent", SEP_1, SEP_30)).thenReturn(new BigDecimal("100.0000"));
-        when(txRepo.sumExpenseForBudget(USER_ID, "c-fun", SEP_1, SEP_30)).thenReturn(new BigDecimal("5.0000"));
+        // One grouped query; the overall budget counts every expense, uncategorised (null) included: 900.
+        when(txRepo.sumByCategory(USER_ID, TransactionType.EXPENSE, SEP_1, SEP_30)).thenReturn(List.of(
+                new Object[]{"c-food", new BigDecimal("450.0000")}, new Object[]{"c-rent", new BigDecimal("100.0000")},
+                new Object[]{"c-fun", new BigDecimal("5.0000")}, new Object[]{null, new BigDecimal("345.0000")}));
 
         mvc.perform(get("/api/v1/budgets").param("month", "2026-09").with(asUser()))
            .andExpect(status().isOk())
            .andExpect(content().json("""
                 {"ok":true,"data":[
-                  {"id":"b-all","amount":"800.0000","period":"MONTHLY","effectiveFrom":"2026-09-01",
+                  {"id":"b-all","categoryId":null,"amount":"800.0000","period":"MONTHLY","effectiveFrom":"2026-09-01",
                    "spent":"900.0000","remaining":"-100.0000","categoryName":"Overall Budget","month":"2026-09",
                    "percentUsed":112.5,"status":"EXCEEDED"},
                   {"id":"b-food","categoryId":"c-food","amount":"500.0000","period":"MONTHLY",
@@ -111,12 +112,11 @@ class BudgetApiContractTest extends WebSliceTest {
         YearMonth now = YearMonth.now();
         when(budgetRepo.findEffectiveForMonth(USER_ID, now.atDay(1), now.atEndOfMonth()))
                 .thenReturn(List.of(budget("b-all", null, "100.0000", now.atDay(1), null)));
-        when(txRepo.sumExpenseForBudget(USER_ID, null, now.atDay(1), now.atEndOfMonth())).thenReturn(BigDecimal.ZERO);
 
         mvc.perform(get("/api/v1/budgets").with(asUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.data[0].month").value(now.toString()))
-           .andExpect(jsonPath("$.data[0].spent").value("0"))
+           .andExpect(jsonPath("$.data[0].spent").value("0.0000"))
            .andExpect(jsonPath("$.data[0].percentUsed").value(0.0));
     }
 
@@ -142,6 +142,8 @@ class BudgetApiContractTest extends WebSliceTest {
 
     @Test
     void createReturns201WithTheBudget() throws Exception {
+        var me = testUser();
+        when(userRepository.getReferenceById(USER_ID)).thenReturn(me);
         var r = send(post("/api/v1/budgets"), """
                 {"categoryId":"c-food","amount":"450.0000","effectiveFrom":"2026-09-01"}""");
         var saved = ArgumentCaptor.forClass(Budget.class);
@@ -151,6 +153,7 @@ class BudgetApiContractTest extends WebSliceTest {
                 {"ok":true,"data":{"id":"%s","categoryId":"c-food","amount":"450.0000","period":"MONTHLY",
                                    "effectiveFrom":"2026-09-01"}}""".formatted(saved.getValue().getId()), JsonCompareMode.STRICT));
         assertThat(saved.getValue().getCategory()).isSameAs(food);
+        assertThat(saved.getValue().getUser()).isSameAs(me); // owner comes from the JWT subject
     }
 
     @Test
@@ -161,7 +164,7 @@ class BudgetApiContractTest extends WebSliceTest {
         verify(budgetRepo).save(saved.capture());
         r.andExpect(status().isCreated())
          .andExpect(content().json("""
-                {"ok":true,"data":{"id":"%s","amount":"2000.0000","period":"MONTHLY",
+                {"ok":true,"data":{"id":"%s","categoryId":null,"amount":"2000.0000","period":"MONTHLY",
                                    "effectiveFrom":"2026-09-01","effectiveTo":"2026-12-31"}}""".formatted(saved.getValue().getId()),
                  JsonCompareMode.STRICT));
     }
@@ -257,5 +260,149 @@ class BudgetApiContractTest extends WebSliceTest {
         }
         expectFieldError(mvc.perform(get("/api/v1/budgets/history").param("months", "six").with(asUser())), "months", "Invalid value");
         expectFieldError(mvc.perform(get("/api/v1/budgets").param("month", "2026-13").with(asUser())), "month", "Invalid value");
+    }
+
+    // ── Contract fixes ──
+
+    @Test
+    void createAsTheMobileAppSendsIt() throws Exception {
+        // app/budgets/new.tsx posts only {amount, categoryId}; this used to be a 500.
+        var r = send(post("/api/v1/budgets"), """
+                {"amount":"450","categoryId":"c-food"}""");
+        var saved = ArgumentCaptor.forClass(Budget.class);
+        verify(budgetRepo).save(saved.capture());
+        r.andExpect(status().isCreated())
+         .andExpect(content().json("""
+                {"ok":true,"data":{"id":"%s","categoryId":"c-food","amount":"450.0000","period":"MONTHLY",
+                                   "effectiveFrom":"%s"}}""".formatted(saved.getValue().getId(), YearMonth.now().atDay(1)),
+                 JsonCompareMode.STRICT));
+    }
+
+    @Test
+    void effectiveFromIsSnappedToTheFirstOfTheMonth() throws Exception {
+        send(post("/api/v1/budgets"), """
+                {"amount":"1","effectiveFrom":"2026-09-17"}""")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.effectiveFrom").value("2026-09-01"));
+    }
+
+    @Test
+    void incomeCategoriesCannotBeBudgeted() throws Exception {
+        when(categoryRepo.findByIdAndUserIdAndDeletedAtIsNull("c-salary", USER_ID)).thenReturn(Optional.of(
+                Category.builder().id("c-salary").name("Salary").kind(CategoryKind.INCOME).build()));
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"categoryId\":\"c-salary\"}"),
+                "categoryId", "Budgets can only track expense categories");
+        verify(budgetRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void endBeforeStartIsRejected() throws Exception {
+        expectFieldError(send(post("/api/v1/budgets"), """
+                {"amount":"1","effectiveFrom":"2026-09-01","effectiveTo":"2026-08-31"}"""),
+                "effectiveTo", "The end can't be before the start");
+        Budget b = budget("b-food", food, "500.0000", SEP_1, null);
+        when(budgetRepo.findByIdAndUserIdAndDeletedAtIsNull("b-food", USER_ID)).thenReturn(Optional.of(b));
+        expectFieldError(send(patch("/api/v1/budgets/b-food"), "{\"effectiveTo\":\"2026-08-01\"}"),
+                "effectiveTo", "The end can't be before the start");
+        assertThat(b.getEffectiveTo()).isNull();
+    }
+
+    @Test
+    void extendingABudgetIntoAnotherIsAnOverlap() throws Exception {
+        Budget b = budget("b-food", food, "500.0000", SEP_1, LocalDate.of(2026, 10, 31));
+        when(budgetRepo.findByIdAndUserIdAndDeletedAtIsNull("b-food", USER_ID)).thenReturn(Optional.of(b));
+        when(budgetRepo.countOverlapping(USER_ID, "c-food", "b-food", SEP_1, LocalDate.of(2027, 3, 31))).thenReturn(1L);
+
+        send(patch("/api/v1/budgets/b-food"), "{\"effectiveTo\":\"2027-03-31\"}")
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.error.code").value("BUDGET_OVERLAP"));
+        assertThat(b.getEffectiveTo()).isEqualTo(LocalDate.of(2026, 10, 31));
+    }
+
+    // ── Review follow-ups: single-field PATCH, other months, normalisation ──
+
+    static final LocalDate MAR_1_2027 = LocalDate.of(2027, 3, 1);
+
+    @Test
+    void patchingOnlyTheAmountKeepsTheEndAndSkipsTheOverlapCheck() throws Exception {
+        Budget b = budget("b-food", food, "500.0000", SEP_1, LocalDate.of(2026, 12, 1));
+        when(budgetRepo.findByIdAndUserIdAndDeletedAtIsNull("b-food", USER_ID)).thenReturn(Optional.of(b));
+
+        send(patch("/api/v1/budgets/b-food"), "{\"amount\":\"650\"}")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.amount").value("650.0000"))
+            .andExpect(jsonPath("$.data.effectiveTo").value("2026-12-01"));
+        assertThat(b.getAmount()).hasToString("650.0000");
+        verify(budgetRepo, org.mockito.Mockito.never()).countOverlapping(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void patchingOnlyTheEndKeepsTheAmount() throws Exception {
+        Budget b = budget("b-food", food, "500.0000", SEP_1, null);
+        when(budgetRepo.findByIdAndUserIdAndDeletedAtIsNull("b-food", USER_ID)).thenReturn(Optional.of(b));
+
+        send(patch("/api/v1/budgets/b-food"), "{\"effectiveTo\":\"2027-06-30\"}")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.amount").value("500.0000"))
+            .andExpect(jsonPath("$.data.effectiveTo").value("2027-06-30"));
+    }
+
+    @Test
+    void patchAmountPrecisionIsValidated() throws Exception {
+        expectFieldError(send(patch("/api/v1/budgets/b-food"), "{\"amount\":\"1.23456\"}"), "amount",
+                "Enter a valid amount with up to 4 decimal places");
+    }
+
+    @Test
+    void categoryBudgetWithNoSpendInAnotherMonth() throws Exception {
+        LocalDate mar31 = LocalDate.of(2027, 3, 31);
+        when(budgetRepo.findEffectiveForMonth(USER_ID, MAR_1_2027, mar31))
+                .thenReturn(List.of(budget("b-food", food, "500.0000", SEP_1, null)));
+        when(txRepo.sumByCategory(USER_ID, TransactionType.EXPENSE, MAR_1_2027, mar31))
+                .thenReturn(List.<Object[]>of(new Object[]{null, new BigDecimal("12.0000")}));
+
+        mvc.perform(get("/api/v1/budgets").param("month", "2027-03").with(asUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.data[0].month").value("2027-03"))
+           .andExpect(jsonPath("$.data[0].spent").value("0.0000"))
+           .andExpect(jsonPath("$.data[0].remaining").value("500.0000"))
+           .andExpect(jsonPath("$.data[0].status").value("OK"));
+    }
+
+    @Test
+    void explicitDatesInAnotherMonthAreKeptAndASingleMonthBudgetIsAllowed() throws Exception {
+        send(post("/api/v1/budgets"), """
+                {"amount":"1","effectiveFrom":"2027-03-17","effectiveTo":"2027-03-01"}""")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.effectiveFrom").value("2027-03-01"))
+            .andExpect(jsonPath("$.data.effectiveTo").value("2027-03-01"));
+    }
+
+    @Test
+    void categoryIdIsTrimmed() throws Exception {
+        send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"categoryId\":\" c-food \"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.categoryId").value("c-food"));
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"categoryId\":\"   \"}"),
+                "categoryId", "Choose a category");
+    }
+
+    @Test
+    void historyDefaultsToSixMonths() throws Exception {
+        mvc.perform(get("/api/v1/budgets/history").with(asUser())).andExpect(status().isOk())
+           .andExpect(jsonPath("$.data.length()").value(6));
+        verify(txRepo, org.mockito.Mockito.times(6)).sumExpenseForBudget(eq(USER_ID), eq(null), any(), any());
+    }
+
+    @Test
+    void datesOutsideWhatMySqlCanStoreAre422() throws Exception {
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"effectiveTo\":\"+10000-01-01\"}"),
+                "effectiveTo", "Invalid value");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"effectiveFrom\":\"-0005-03-03\"}"),
+                "effectiveFrom", "Invalid value");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"effectiveFrom\":\"0999-12-31\"}"),
+                "effectiveFrom", "Invalid value");
+        send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"effectiveFrom\":\"1000-01-01\",\"effectiveTo\":\"9999-12-31\"}")
+            .andExpect(status().isCreated());
     }
 }

@@ -1,5 +1,6 @@
 package com.financetracker.api.dto.budget;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.financetracker.api.dto.DecimalString;
 import com.financetracker.api.dto.Inputs;
 import com.financetracker.api.entity.Budget;
@@ -22,16 +23,23 @@ public final class BudgetDtos {
 
     // ── Requests ─────────────────────────────────────────────────────────
 
-    /** {@code categoryId} omitted = one overall budget across every category. Amounts are in the base currency. */
+    /**
+     * {@code categoryId} omitted = one overall budget across every category. Amounts are in the base
+     * currency. Budgets are monthly: {@code effectiveFrom} is snapped to the 1st and defaults (server-side)
+     * to the current month — the mobile client never sends it.
+     */
     public record CreateBudgetRequest(
             @Size(min = 1, max = 64, message = "Choose a category") String categoryId,
             @NotNull(message = "Enter an amount")
             @DecimalMin(value = "0", inclusive = false, message = "Amount must be greater than zero")
             @Digits(integer = 14, fraction = 4, message = "Enter a valid amount with up to 4 decimal places")
             BigDecimal amount,
-            @NotNull(message = "Required") LocalDate effectiveFrom,
+            LocalDate effectiveFrom,
             LocalDate effectiveTo) {
-        public CreateBudgetRequest { categoryId = Inputs.strip(categoryId); }
+        public CreateBudgetRequest {
+            categoryId = Inputs.strip(categoryId);
+            if (effectiveFrom != null) effectiveFrom = effectiveFrom.withDayOfMonth(1);
+        }
     }
 
     /** PATCH: a field left out (null) is left unchanged. */
@@ -43,7 +51,9 @@ public final class BudgetDtos {
 
     // ── Responses ────────────────────────────────────────────────────────
 
-    public record BudgetResponse(String id, String categoryId, @DecimalString BigDecimal amount, BudgetPeriod period,
+    /** {@code categoryId} is always present (null = overall): the mobile list tells them apart with {@code !== null}. */
+    public record BudgetResponse(String id, @JsonInclude(JsonInclude.Include.ALWAYS) String categoryId,
+                                 @DecimalString BigDecimal amount, BudgetPeriod period,
                                  LocalDate effectiveFrom, LocalDate effectiveTo) {
         public static BudgetResponse of(Budget b) {
             return new BudgetResponse(b.getId(), b.getCategory() != null ? b.getCategory().getId() : null,
@@ -52,7 +62,8 @@ public final class BudgetDtos {
     }
 
     /** A budget with this month's spend. {@code percentUsed} is a JSON number (mobile calls toFixed on it). */
-    public record BudgetProgress(String id, String categoryId, @DecimalString BigDecimal amount, BudgetPeriod period,
+    public record BudgetProgress(String id, @JsonInclude(JsonInclude.Include.ALWAYS) String categoryId,
+                                 @DecimalString BigDecimal amount, BudgetPeriod period,
                                  LocalDate effectiveFrom, LocalDate effectiveTo,
                                  @DecimalString BigDecimal spent, @DecimalString BigDecimal remaining,
                                  String categoryName, String color, YearMonth month,

@@ -8,11 +8,13 @@ import com.financetracker.api.repository.GoalContributionRepository;
 import com.financetracker.api.repository.SavingsGoalRepository;
 import com.financetracker.api.repository.TransactionRepository;
 import com.financetracker.api.repository.UserSettingsRepository;
+import com.financetracker.api.service.SavingsService;
 import com.financetracker.api.support.WebSliceTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
@@ -44,6 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * (monthsRemaining/requiredMonthly/overdue) is relative to today, so target dates are too.
  */
 @WebMvcTest(SavingsController.class)
+@Import(SavingsService.class)
 class SavingsApiContractTest extends WebSliceTest {
 
     @MockitoBean SavingsGoalRepository goalRepo;
@@ -272,5 +275,67 @@ class SavingsApiContractTest extends WebSliceTest {
         mvc.perform(delete("/api/v1/savings/contributions/nope").with(asUser()))
            .andExpect(status().isNotFound())
            .andExpect(jsonPath("$.error.message").value("Contribution not found"));
+    }
+
+    // ── Input validation: 422 VALIDATION_FAILED with field errors (was 500 or silently stored) ──
+
+    private void expectFieldError(ResultActions r, String field, String message) throws Exception {
+        r.andExpect(status().is(422))
+         .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
+         .andExpect(jsonPath("$.error.fieldErrors['" + field + "'][0]").value(message));
+    }
+
+    @Test
+    void createGoalValidatesEveryField() throws Exception {
+        String url = "/api/v1/savings/goals";
+        expectFieldError(send(post(url), "{\"targetAmount\":\"1\"}"), "name", "Required");
+        expectFieldError(send(post(url), "{\"name\":\"  \",\"targetAmount\":\"1\"}"), "name", "Required");
+        expectFieldError(send(post(url), "{\"name\":\"" + "x".repeat(61) + "\",\"targetAmount\":\"1\"}"), "name", "Keep this under 60 characters");
+        expectFieldError(send(post(url), "{\"name\":\"Car\"}"), "targetAmount", "Enter an amount");
+        expectFieldError(send(post(url), "{\"name\":\"Car\",\"targetAmount\":\"0\"}"), "targetAmount", "Amount must be greater than zero");
+        expectFieldError(send(post(url), "{\"name\":\"Car\",\"targetAmount\":\"1.00001\"}"), "targetAmount",
+                "Enter a valid amount with up to 4 decimal places");
+        expectFieldError(send(post(url), "{\"name\":\"Car\",\"targetAmount\":\"1\",\"color\":\"red\"}"), "color", "Enter a colour as #RRGGBB");
+        expectFieldError(send(post(url), "{\"name\":\"Car\",\"targetAmount\":\"1\",\"icon\":\"" + "i".repeat(41) + "\"}"),
+                "icon", "Keep this under 40 characters");
+        verify(goalRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void patchGoalValidatesAndLeavesAbsentFieldsAlone() throws Exception {
+        SavingsGoal g = goal("g1", "1000.0000", LocalDate.of(2027, 1, 1), GoalStatus.ACTIVE);
+        when(goalRepo.findByIdAndUserIdAndDeletedAtIsNull("g1", USER_ID)).thenReturn(Optional.of(g));
+
+        expectFieldError(send(patch("/api/v1/savings/goals/g1"), "{\"name\":\" \"}"), "name", "Required");
+        expectFieldError(send(patch("/api/v1/savings/goals/g1"), "{\"targetAmount\":\"-1\"}"), "targetAmount", "Amount must be greater than zero");
+        expectFieldError(send(patch("/api/v1/savings/goals/g1"), "{\"status\":\"DONE\"}"), "status", "Invalid value");
+
+        send(patch("/api/v1/savings/goals/g1"), "{\"name\":\"Car\"}").andExpect(status().isOk());
+        assertThat(g.getName()).isEqualTo("Car");
+        assertThat(g.getTargetDate()).isEqualTo(LocalDate.of(2027, 1, 1)); // absent ≠ null
+        assertThat(g.getTargetAmount()).isEqualByComparingTo("1000");
+    }
+
+    @Test
+    void contributionValidation() throws Exception {
+        SavingsGoal g = goal("g1", "1000.0000", null, GoalStatus.ACTIVE);
+        when(goalRepo.findByIdAndUserIdAndDeletedAtIsNull("g1", USER_ID)).thenReturn(Optional.of(g));
+        String url = "/api/v1/savings/goals/g1/contributions";
+
+        expectFieldError(send(post(url), "{\"occurredOn\":\"2026-09-10\"}"), "amount", "Enter an amount");
+        expectFieldError(send(post(url), "{\"amount\":\"0\",\"occurredOn\":\"2026-09-10\"}"), "amount",
+                "Enter an amount above or below zero");
+        expectFieldError(send(post(url), "{\"amount\":\"1\",\"occurredOn\":\"2026-09-10\",\"notes\":\"" + "n".repeat(201) + "\"}"),
+                "notes", "Keep this under 200 characters");
+        verify(contribRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void withdrawalsAreNegativeContributions() throws Exception {
+        SavingsGoal g = goal("g1", "1000.0000", null, GoalStatus.ACTIVE);
+        when(goalRepo.findByIdAndUserIdAndDeletedAtIsNull("g1", USER_ID)).thenReturn(Optional.of(g));
+        send(post("/api/v1/savings/goals/g1/contributions"), "{\"amount\":\"-50\",\"occurredOn\":\"2026-09-10\"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.amount").value("-50"));
     }
 }

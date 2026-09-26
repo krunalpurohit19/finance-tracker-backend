@@ -15,7 +15,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -127,10 +126,9 @@ public class BudgetService {
     // ── helpers ──────────────────────────────────────────────────────────
 
     static BudgetProgress progress(Budget b, BigDecimal spent, YearMonth month) {
-        BigDecimal percentUsed = null;
+        BigDecimal percentUsed = Ratios.percent(spent, b.getAmount());
         BudgetStatus status = BudgetStatus.OK;
-        if (b.getAmount().signum() > 0) {
-            percentUsed = spent.multiply(HUNDRED).divide(b.getAmount(), 2, RoundingMode.HALF_UP);
+        if (percentUsed != null) {
             if (percentUsed.compareTo(HUNDRED) >= 0) status = BudgetStatus.EXCEEDED;
             else if (percentUsed.compareTo(NEAR_LIMIT_PERCENT) >= 0) status = BudgetStatus.NEAR_LIMIT;
         }

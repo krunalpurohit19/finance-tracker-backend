@@ -26,6 +26,14 @@ Requires Java 21+ and MySQL.
    ./mvnw spring-boot:run
    ```
 
+3. **Run the Tests**
+   ```bash
+   ./mvnw clean test
+   ```
+   Controller tests are `@WebMvcTest` slices extending `support/WebSliceTest` (real security chain and
+   exception handler, mocked repositories), so they need no database or Docker. The project targets
+   Java 21; point `JAVA_HOME` at a JDK 21 if your default is newer.
+
 ## Rules that are not negotiable
 
 These exist because getting them wrong corrupts financial data silently.

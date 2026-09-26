@@ -142,6 +142,47 @@ class SettingsApiContractTest extends WebSliceTest {
         assertThat(settings.getWeekStartsOn()).isZero();
         assertThat(settings.getLocale()).isEqualTo("en-IN");
         assertThat(settings.getTimezone()).isEqualTo("Asia/Kolkata");
+        assertThat(settings.getDateFormat()).isEqualTo("dd/MM/yyyy");
+    }
+
+    @Test
+    void updatePreferencesWritesEachField() throws Exception {
+        send(patch("/api/v1/settings/preferences"), """
+                {"locale":"en-SG","timezone":"America/New_York","dateFormat":"d MMM yyyy","theme":"LIGHT","weekStartsOn":6}""")
+            .andExpect(status().isOk());
+        assertThat(settings.getLocale()).isEqualTo("en-SG");
+        assertThat(settings.getTimezone()).isEqualTo("America/New_York");
+        assertThat(settings.getDateFormat()).isEqualTo("d MMM yyyy");
+        assertThat(settings.getTheme()).isEqualTo(ThemePreference.LIGHT);
+        assertThat(settings.getWeekStartsOn()).isEqualTo(6);
+    }
+
+    @Test
+    void missingSettingsRowIs404NotServerError() throws Exception {
+        when(settingsRepo.findById(USER_ID)).thenReturn(Optional.empty());
+        mvc.perform(get("/api/v1/settings").with(asUser()))
+           .andExpect(status().isNotFound())
+           .andExpect(content().json("""
+                   {"ok":false,"error":{"code":"NOT_FOUND","message":"Settings not found"}}""", JsonCompareMode.STRICT));
+    }
+
+    @Test
+    void repeatedKeysAre422NotServerError() throws Exception {
+        for (String body : List.of("{\"name\":\"a\",\"name\":\"b\"}", "{\"name\":\"a\",\"name\":\"a\"}")) {
+            send(patch("/api/v1/settings/profile"), body)
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"));
+        }
+        send(post("/api/v1/settings/base-currency"), "{\"baseCurrency\":\"USD\",\"baseCurrency\":\"EUR\"}")
+            .andExpect(status().is(422));
+        assertThat(settings.getBaseCurrency()).isEqualTo("INR");
+    }
+
+    @Test
+    void mobileKeyWinsOverLegacyKey() throws Exception {
+        expectBody(send(post("/api/v1/settings/base-currency"), """
+                {"baseCurrency":"USD","currency":"EUR","confirm":"USD"}"""), """
+                {"ok":true,"data":{"from":"INR","to":"USD","repriced":0}}""");
     }
 
     // ── POST base-currency ──────────────────────────────────────────────
@@ -168,6 +209,7 @@ class SettingsApiContractTest extends WebSliceTest {
            .andExpect(status().isOk())
            .andExpect(content().json("{\"ok\":true,\"data\":{\"deleted\":true}}", JsonCompareMode.STRICT));
         assertThat(user.getDeletedAt()).isNotNull();
+        verify(refreshTokenRepo).deleteAllByUserId(USER_ID);
     }
 
     // ── /api/v1/exchange-rates ──────────────────────────────────────────
@@ -195,19 +237,19 @@ class SettingsApiContractTest extends WebSliceTest {
         verify(rateRepo).save(saved.capture());
         expectBody(r, """
                 {"ok":true,"data":{"id":"%s","fromCurrency":"USD","toCurrency":"INR",
-                                   "rate":"83.25","effectiveFrom":"2026-01-01"}}""".formatted(saved.getValue().getId()));
+                                   "rate":"83.25000000","effectiveFrom":"2026-01-01"}}""".formatted(saved.getValue().getId()));
     }
 
     @Test
     void upsertUpdatesExistingRate() throws Exception {
         ExchangeRate existing = rate("r1", "80.00000000");
-        when(rateRepo.findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFromAndDeletedAtIsNull(
+        when(rateRepo.findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFrom(
                 USER_ID, "USD", "INR", LocalDate.of(2026, 1, 1))).thenReturn(Optional.of(existing));
 
         expectBody(send(put("/api/v1/exchange-rates"), """
                 {"fromCurrency":"USD","toCurrency":"INR","rate":"83.25","effectiveFrom":"2026-01-01"}"""), """
                 {"ok":true,"data":{"id":"r1","fromCurrency":"USD","toCurrency":"INR",
-                                   "rate":"83.25","effectiveFrom":"2026-01-01"}}""");
+                                   "rate":"83.25000000","effectiveFrom":"2026-01-01"}}""");
     }
 
     @Test
@@ -218,6 +260,8 @@ class SettingsApiContractTest extends WebSliceTest {
         expectBody(mvc.perform(delete("/api/v1/exchange-rates/r1").with(asUser())), """
                 {"ok":true,"data":{"id":"r1"}}""");
         assertThat(existing.getDeletedAt()).isNotNull();
+        verify(rateRepo).findByIdAndUserIdAndDeletedAtIsNull("r1", USER_ID);
+        org.mockito.Mockito.verifyNoMoreInteractions(rateRepo); // soft delete only: no delete*/save of another row
     }
 
     @Test
@@ -243,8 +287,9 @@ class SettingsApiContractTest extends WebSliceTest {
                 "{\"ok\":true,\"data\":{\"name\":\"Asha\"}}");
         expectFieldError(send(patch("/api/v1/settings/profile"), "{\"name\":\"   \"}"), "name", "Required");
         expectFieldError(send(patch("/api/v1/settings/profile"), "{}"), "name", "Required");
-        expectFieldError(send(patch("/api/v1/settings/profile"), "{\"name\":\"" + "x".repeat(61) + "\"}"),
-                "name", "Keep this under 60 characters");
+        expectFieldError(send(patch("/api/v1/settings/profile"), "{\"name\":\"" + "x".repeat(81) + "\"}"),
+                "name", "Keep this under 80 characters");
+        send(patch("/api/v1/settings/profile"), "{\"name\":\"" + "x".repeat(80) + "\"}").andExpect(status().isOk());
     }
 
     @Test
@@ -273,16 +318,59 @@ class SettingsApiContractTest extends WebSliceTest {
 
     @Test
     void baseCurrencyMustBeACurrencyCode() throws Exception {
-        expectFieldError(send(post("/api/v1/settings/base-currency"), "{}"), "currency", "Required");
-        expectFieldError(send(post("/api/v1/settings/base-currency"), "{\"currency\":\"dollars\"}"),
-                "currency", "Enter a 3-letter currency code");
+        expectFieldError(send(post("/api/v1/settings/base-currency"), "{}"), "baseCurrency", "Required");
+        expectFieldError(send(post("/api/v1/settings/base-currency"), "{\"baseCurrency\":\"dollars\"}"),
+                "baseCurrency", "Enter a 3-letter currency code");
         assertThat(settings.getBaseCurrency()).isEqualTo("INR");
     }
 
     @Test
-    void deleteAccountRequiresPassword() throws Exception {
+    void deleteAccountRequiresPasswordAndConfirmation() throws Exception {
         expectFieldError(send(post("/api/v1/settings/delete-account"), "{\"confirm\":\"DELETE\"}"),
                 "password", "Enter your password");
+        expectFieldError(send(post("/api/v1/settings/delete-account"), "{\"password\":\"x\"}"),
+                "confirm", "Type DELETE to confirm");
+        expectFieldError(send(post("/api/v1/settings/delete-account"), "{\"password\":\"x\",\"confirm\":\"delete\"}"),
+                "confirm", "Type DELETE to confirm");
+    }
+
+    @Test
+    void deleteAccountWithWrongPasswordIsFieldErrorNotSignOut() throws Exception {
+        User user = testUser();
+        user.setPassword(passwordEncoder.encode("correct horse"));
+        when(userRepository.findByIdAndDeletedAtIsNull(USER_ID)).thenReturn(Optional.of(user));
+
+        mvc.perform(post("/api/v1/settings/delete-account").with(asUser(user))
+                   .contentType(MediaType.APPLICATION_JSON)
+                   .content("{\"password\":\"battery staple\",\"confirm\":\"DELETE\"}"))
+           .andExpect(status().is(422))
+           .andExpect(content().json("""
+                   {"ok":false,"error":{"code":"VALIDATION_FAILED","message":"Incorrect password",
+                                        "fieldErrors":{"password":["Incorrect password"]}}}""", JsonCompareMode.STRICT));
+        assertThat(user.getDeletedAt()).isNull();
+    }
+
+    // ── Base currency as the mobile client sends it ──
+
+    @Test
+    void changeBaseCurrencyAcceptsMobileBody() throws Exception {
+        expectBody(send(post("/api/v1/settings/base-currency"), """
+                {"baseCurrency":"USD","confirm":"USD"}"""), """
+                {"ok":true,"data":{"from":"INR","to":"USD","repriced":0}}""");
+        assertThat(settings.getBaseCurrency()).isEqualTo("USD");
+    }
+
+    @Test
+    void changeBaseCurrencyIsRefusedOnceMoneyIsRecorded() throws Exception {
+        when(userRepository.countTransactions(USER_ID)).thenReturn(12L);
+        send(post("/api/v1/settings/base-currency"), """
+                {"baseCurrency":"USD","confirm":"USD"}""")
+            .andExpect(status().isConflict())
+            .andExpect(content().json("""
+                    {"ok":false,"error":{"code":"CONFLICT",
+                     "message":"Your base currency can't be changed yet once you have transactions, budgets or goals"}}""",
+                    JsonCompareMode.STRICT));
+        assertThat(settings.getBaseCurrency()).isEqualTo("INR");
     }
 
     @Test
@@ -291,13 +379,16 @@ class SettingsApiContractTest extends WebSliceTest {
         expectFieldError(r, "fromCurrency", "Required");
         r.andExpect(jsonPath("$.error.fieldErrors.toCurrency[0]").value("Required"))
          .andExpect(jsonPath("$.error.fieldErrors.rate[0]").value("Required"))
-         .andExpect(jsonPath("$.error.fieldErrors.effectiveFrom[0]").value("Required"));
+         .andExpect(jsonPath("$.error.fieldErrors.effectiveFrom").doesNotExist());
 
         String base = "{\"fromCurrency\":\"USD\",\"toCurrency\":\"INR\",\"effectiveFrom\":\"2026-01-01\",";
         expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"0\"}"), "rate", "Rate must be greater than zero");
         expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"-1\"}"), "rate", "Rate must be greater than zero");
         expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"1.123456789\"}"), "rate", "Enter a valid rate");
         expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"abc\"}"), "rate", "Invalid value");
+        expectFieldError(send(put("/api/v1/exchange-rates"),
+                "{\"fromCurrency\":\"USD\",\"toCurrency\":\"usd\",\"rate\":\"1\"}"),
+                "toCurrency", "Choose two different currencies");
         expectFieldError(send(put("/api/v1/exchange-rates"),
                 "{\"fromCurrency\":\"US\",\"toCurrency\":\"INR\",\"rate\":\"1\",\"effectiveFrom\":\"2026-01-01\"}"),
                 "fromCurrency", "Enter a 3-letter currency code");
@@ -307,9 +398,9 @@ class SettingsApiContractTest extends WebSliceTest {
     @Test
     void upsertAcceptsJsonNumberRateExactly() throws Exception {
         send(put("/api/v1/exchange-rates"), """
-                {"fromCurrency":"USD","toCurrency":"INR","rate":83.12345678,"effectiveFrom":"2026-01-01"}""")
+                {"fromCurrency":"USD","toCurrency":"INR","rate":1234567890.12345678,"effectiveFrom":"2026-01-01"}""")
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.rate").value("83.12345678"));
+            .andExpect(jsonPath("$.data.rate").value("1234567890.12345678")); // a double would give ...12345670
     }
 
     @Test

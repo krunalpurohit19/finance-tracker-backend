@@ -3,6 +3,7 @@ package com.financetracker.api.entity;
 import com.financetracker.api.entity.enums.ThemePreference;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.DynamicUpdate;
 import java.time.Instant;
 
 @Entity
@@ -10,6 +11,7 @@ import java.time.Instant;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@DynamicUpdate // write only changed columns, so concurrent single-field PATCHes don't revert each other
 public class UserSettings {
 
     @Id

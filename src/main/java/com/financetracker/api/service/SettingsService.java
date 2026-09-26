@@ -4,6 +4,7 @@ import com.financetracker.api.dto.settings.SettingsDtos.*;
 import com.financetracker.api.entity.User;
 import com.financetracker.api.entity.UserSettings;
 import com.financetracker.api.exception.ApiException;
+import com.financetracker.api.repository.RefreshTokenRepository;
 import com.financetracker.api.repository.UserRepository;
 import com.financetracker.api.repository.UserSettingsRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -20,11 +21,14 @@ public class SettingsService {
 
     private final UserSettingsRepository settingsRepo;
     private final UserRepository userRepo;
+    private final RefreshTokenRepository refreshTokenRepo;
     private final PasswordEncoder passwordEncoder;
 
-    public SettingsService(UserSettingsRepository settingsRepo, UserRepository userRepo, PasswordEncoder passwordEncoder) {
+    public SettingsService(UserSettingsRepository settingsRepo, UserRepository userRepo,
+                           RefreshTokenRepository refreshTokenRepo, PasswordEncoder passwordEncoder) {
         this.settingsRepo = settingsRepo;
         this.userRepo = userRepo;
+        this.refreshTokenRepo = refreshTokenRepo;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -71,22 +75,39 @@ public class SettingsService {
         return new PreferencesUpdated(true);
     }
 
+    /**
+     * Budgets, goals and every transaction's baseAmount are denominated in the base currency, so
+     * switching it while any exist would relabel ₹450 as $450.
+     */
     @Transactional
     public BaseCurrencyChanged changeBaseCurrency(String userId, ChangeBaseCurrencyRequest req) {
         UserSettings s = settings(userId);
         String from = s.getBaseCurrency();
-        s.setBaseCurrency(req.currency());
-        // Note: mass rewrite of baseAmount on transactions would go here in production
-        return new BaseCurrencyChanged(from, req.currency(), 0);
+        String to = req.baseCurrency();
+        if (!from.equals(to)) {
+            // ponytail: refuses instead of repricing; repricing history needs a rate for every pair and date
+            // (product decision pending), at which point `repriced` becomes a real count.
+            // ponytail: count-then-update is not locked against a transaction created at the same instant on
+            // another device; closing it needs writers to read settings FOR SHARE (Transactions module).
+            long denominated = userRepo.countTransactions(userId) + userRepo.countBudgets(userId) + userRepo.countGoals(userId);
+            if (denominated > 0) {
+                throw ApiException.conflict(
+                        "Your base currency can't be changed yet once you have transactions, budgets or goals");
+            }
+            s.setBaseCurrency(to);
+        }
+        return new BaseCurrencyChanged(from, to, 0);
     }
 
     @Transactional
     public AccountDeleted deleteAccount(String userId, DeleteAccountRequest req) {
         User user = activeUser(userId);
         if (!passwordEncoder.matches(req.password(), user.getPassword())) {
-            throw ApiException.unauthenticated("Incorrect password");
+            // 422 on the field, not 401: the session is fine, the form is wrong.
+            throw ApiException.validationFailed("Incorrect password", Map.of("password", List.of("Incorrect password")));
         }
         user.setDeletedAt(Instant.now());
+        refreshTokenRepo.deleteAllByUserId(userId); // no new access tokens for a deleted account
         return new AccountDeleted(true);
     }
 

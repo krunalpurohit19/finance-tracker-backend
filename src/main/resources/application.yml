@@ -34,6 +34,9 @@ spring:
     generator:
       # Money/rates are BigDecimal fields sent as JSON strings; never "1E-8".
       write-bigdecimal-as-plain: true
+    parser:
+      # {"amount":"1","amount":"-1"} is rejected (422), never "last one wins".
+      strict-duplicate-detection: true
 
 server:
   port: 4000

@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -29,10 +30,14 @@ public class ExchangeRateService {
         return rateRepo.findActiveByUserId(userId).stream().map(ExchangeRateResponse::of).toList();
     }
 
-    /** One rate per user, pair and effective date: an existing one is overwritten. */
+    /** One rate per user, pair and effective date: an existing one is overwritten, a deleted one revived. */
     @Transactional
     public ExchangeRateResponse upsert(String userId, UpsertExchangeRateRequest req) {
-        ExchangeRate rate = rateRepo.findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFromAndDeletedAtIsNull(
+        if (req.fromCurrency().equals(req.toCurrency())) {
+            throw ApiException.validationFailed("Some of the details you entered need fixing",
+                    Map.of("toCurrency", List.of("Choose two different currencies")));
+        }
+        ExchangeRate rate = rateRepo.findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFrom(
                         userId, req.fromCurrency(), req.toCurrency(), req.effectiveFrom())
                 .orElseGet(() -> ExchangeRate.builder()
                         .id(UUID.randomUUID().toString())
@@ -41,7 +46,8 @@ public class ExchangeRateService {
                         .toCurrency(req.toCurrency())
                         .effectiveFrom(req.effectiveFrom())
                         .build());
-        rate.setRate(req.rate());
+        rate.setRate(req.rate().setScale(8)); // DECIMAL(18,8); @Digits guarantees this is exact
+        rate.setDeletedAt(null);
         return ExchangeRateResponse.of(rateRepo.save(rate));
     }
 

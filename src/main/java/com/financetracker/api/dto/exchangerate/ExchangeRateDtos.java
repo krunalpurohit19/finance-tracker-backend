@@ -26,10 +26,12 @@ public final class ExchangeRateDtos {
             @DecimalMin(value = "0", inclusive = false, message = "Rate must be greater than zero")
             @Digits(integer = 10, fraction = 8, message = "Enter a valid rate")
             BigDecimal rate,
-            @NotNull(message = "Required") LocalDate effectiveFrom) {
+            LocalDate effectiveFrom) {
         public UpsertExchangeRateRequest {
             fromCurrency = Inputs.currency(fromCurrency);
             toCurrency = Inputs.currency(toCurrency);
+            // Omitted = the rate applies to all history (mobile exchange-rates.ts).
+            if (effectiveFrom == null) effectiveFrom = LocalDate.EPOCH;
         }
     }
 

@@ -29,7 +29,10 @@ public interface ExchangeRateRepository extends JpaRepository<ExchangeRate, Stri
     """)
     Optional<ExchangeRate> findEffectiveRate(String userId, String from, String to, LocalDate asOf);
 
-    /** Upsert: find existing for same user/pair/date. */
-    Optional<ExchangeRate> findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFromAndDeletedAtIsNull(
+    /**
+     * Upsert lookup. Deliberately includes soft-deleted rows: uk_exchange_rates covers them too,
+     * so a deleted rate must be revived rather than re-inserted.
+     */
+    Optional<ExchangeRate> findByUserIdAndFromCurrencyAndToCurrencyAndEffectiveFrom(
             String userId, String fromCurrency, String toCurrency, LocalDate effectiveFrom);
 }

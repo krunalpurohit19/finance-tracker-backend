@@ -23,8 +23,9 @@ public final class SettingsDtos {
 
     // ── Requests ─────────────────────────────────────────────────────────
 
+    /** Same limit as sign-up (mobile credentials.ts allows 80), so any name we accepted can be saved again. */
     public record UpdateProfileRequest(
-            @NotBlank(message = "Required") @Size(max = 60, message = "Keep this under 60 characters") String name) {
+            @NotBlank(message = "Required") @Size(max = 80, message = "Keep this under 80 characters") String name) {
         public UpdateProfileRequest { name = Inputs.strip(name); }
     }
 
@@ -39,13 +40,22 @@ public final class SettingsDtos {
         public UpdatePreferencesRequest { timezone = Inputs.strip(timezone); }
     }
 
+    /**
+     * The mobile client sends {@code baseCurrency} (+ a UI-only {@code confirm}); {@code currency} is the
+     * legacy key, used only when {@code baseCurrency} is absent.
+     */
     public record ChangeBaseCurrencyRequest(
             @NotNull(message = "Required") @Pattern(regexp = "[A-Z]{3}", message = "Enter a 3-letter currency code")
+            String baseCurrency,
             String currency) {
-        public ChangeBaseCurrencyRequest { currency = Inputs.currency(currency); }
+        public ChangeBaseCurrencyRequest { baseCurrency = Inputs.currency(baseCurrency != null ? baseCurrency : currency); }
     }
 
-    public record DeleteAccountRequest(@NotBlank(message = "Enter your password") String password, String confirm) {}
+    /** Two confirmations: the current password and the literal word DELETE. */
+    public record DeleteAccountRequest(
+            @NotBlank(message = "Enter your password") String password,
+            @NotNull(message = "Type DELETE to confirm") @Pattern(regexp = "DELETE", message = "Type DELETE to confirm")
+            String confirm) {}
 
     // ── Responses ────────────────────────────────────────────────────────
 

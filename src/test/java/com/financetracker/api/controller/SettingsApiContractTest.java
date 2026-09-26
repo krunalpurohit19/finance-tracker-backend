@@ -7,12 +7,15 @@ import com.financetracker.api.entity.enums.ThemePreference;
 import com.financetracker.api.repository.ExchangeRateRepository;
 import com.financetracker.api.repository.RefreshTokenRepository;
 import com.financetracker.api.repository.UserSettingsRepository;
+import com.financetracker.api.service.ExchangeRateService;
+import com.financetracker.api.service.SettingsService;
 import com.financetracker.api.support.WebSliceTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -35,6 +38,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -43,6 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * refactor that changes what the mobile client receives fails here.
  */
 @WebMvcTest({SettingsController.class, MeController.class, ExchangeRateController.class})
+@Import({SettingsService.class, ExchangeRateService.class})
 class SettingsApiContractTest extends WebSliceTest {
 
     @MockitoBean UserSettingsRepository settingsRepo;
@@ -174,10 +179,12 @@ class SettingsApiContractTest extends WebSliceTest {
 
     @Test
     void listRates() throws Exception {
-        when(rateRepo.findActiveByUserId(USER_ID)).thenReturn(List.of(rate("r1", "83.25000000")));
+        when(rateRepo.findActiveByUserId(USER_ID)).thenReturn(List.of(rate("r1", "83.25000000"), rate("r2", "0.00000001")));
         expectBody(mvc.perform(get("/api/v1/exchange-rates").with(asUser())), """
                 {"ok":true,"data":[{"id":"r1","fromCurrency":"USD","toCurrency":"INR",
-                                    "rate":"83.25000000","effectiveFrom":"2026-01-01"}]}""");
+                                    "rate":"83.25000000","effectiveFrom":"2026-01-01"},
+                                   {"id":"r2","fromCurrency":"USD","toCurrency":"INR",
+                                    "rate":"0.00000001","effectiveFrom":"2026-01-01"}]}""");
     }
 
     @Test
@@ -219,5 +226,96 @@ class SettingsApiContractTest extends WebSliceTest {
            .andExpect(status().isNotFound())
            .andExpect(content().json("""
                    {"ok":false,"error":{"code":"NOT_FOUND","message":"Exchange rate not found"}}""", JsonCompareMode.STRICT));
+    }
+
+    // ── Input validation: 422 VALIDATION_FAILED with field errors (was 500) ──
+
+    private void expectFieldError(ResultActions r, String field, String message) throws Exception {
+        r.andExpect(status().is(422))
+         .andExpect(jsonPath("$.ok").value(false))
+         .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
+         .andExpect(jsonPath("$.error.fieldErrors['" + field + "'][0]").value(message));
+    }
+
+    @Test
+    void profileNameIsTrimmedAndRequired() throws Exception {
+        expectBody(send(patch("/api/v1/settings/profile"), "{\"name\":\"  Asha  \"}"),
+                "{\"ok\":true,\"data\":{\"name\":\"Asha\"}}");
+        expectFieldError(send(patch("/api/v1/settings/profile"), "{\"name\":\"   \"}"), "name", "Required");
+        expectFieldError(send(patch("/api/v1/settings/profile"), "{}"), "name", "Required");
+        expectFieldError(send(patch("/api/v1/settings/profile"), "{\"name\":\"" + "x".repeat(61) + "\"}"),
+                "name", "Keep this under 60 characters");
+    }
+
+    @Test
+    void preferencesRejectValuesOutsideTheMobileLists() throws Exception {
+        expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"locale\":\"fr-FR\"}"), "locale", "Choose a supported locale");
+        expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"dateFormat\":\"yyyy\"}"), "dateFormat", "Choose a supported date format");
+        expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"theme\":\"PURPLE\"}"), "theme", "Invalid value");
+        expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"weekStartsOn\":7}"), "weekStartsOn", "Choose a day of the week");
+        expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"weekStartsOn\":\"monday\"}"), "weekStartsOn", "Invalid value");
+        for (String tz : List.of("IST", "EST", "+05:30", "Mars/Olympus")) {
+            expectFieldError(send(patch("/api/v1/settings/preferences"), "{\"timezone\":\"" + tz + "\"}"),
+                    "timezone", "Enter an IANA timezone such as Asia/Kolkata");
+        }
+        assertThat(settings.getLocale()).isEqualTo("en-IN");
+        assertThat(settings.getTimezone()).isEqualTo("Asia/Kolkata");
+        assertThat(settings.getTheme()).isEqualTo(ThemePreference.SYSTEM);
+    }
+
+    @Test
+    void preferencesAcceptEveryMobileOption() throws Exception {
+        for (String body : List.of("{\"timezone\":\"UTC\"}", "{\"timezone\":\"America/New_York\"}",
+                "{\"locale\":\"en-SG\"}", "{\"dateFormat\":\"d MMM yyyy\"}", "{\"weekStartsOn\":6}")) {
+            send(patch("/api/v1/settings/preferences"), body).andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void baseCurrencyMustBeACurrencyCode() throws Exception {
+        expectFieldError(send(post("/api/v1/settings/base-currency"), "{}"), "currency", "Required");
+        expectFieldError(send(post("/api/v1/settings/base-currency"), "{\"currency\":\"dollars\"}"),
+                "currency", "Enter a 3-letter currency code");
+        assertThat(settings.getBaseCurrency()).isEqualTo("INR");
+    }
+
+    @Test
+    void deleteAccountRequiresPassword() throws Exception {
+        expectFieldError(send(post("/api/v1/settings/delete-account"), "{\"confirm\":\"DELETE\"}"),
+                "password", "Enter your password");
+    }
+
+    @Test
+    void upsertRateValidatesEveryField() throws Exception {
+        var r = send(put("/api/v1/exchange-rates"), "{}");
+        expectFieldError(r, "fromCurrency", "Required");
+        r.andExpect(jsonPath("$.error.fieldErrors.toCurrency[0]").value("Required"))
+         .andExpect(jsonPath("$.error.fieldErrors.rate[0]").value("Required"))
+         .andExpect(jsonPath("$.error.fieldErrors.effectiveFrom[0]").value("Required"));
+
+        String base = "{\"fromCurrency\":\"USD\",\"toCurrency\":\"INR\",\"effectiveFrom\":\"2026-01-01\",";
+        expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"0\"}"), "rate", "Rate must be greater than zero");
+        expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"-1\"}"), "rate", "Rate must be greater than zero");
+        expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"1.123456789\"}"), "rate", "Enter a valid rate");
+        expectFieldError(send(put("/api/v1/exchange-rates"), base + "\"rate\":\"abc\"}"), "rate", "Invalid value");
+        expectFieldError(send(put("/api/v1/exchange-rates"),
+                "{\"fromCurrency\":\"US\",\"toCurrency\":\"INR\",\"rate\":\"1\",\"effectiveFrom\":\"2026-01-01\"}"),
+                "fromCurrency", "Enter a 3-letter currency code");
+        verify(rateRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void upsertAcceptsJsonNumberRateExactly() throws Exception {
+        send(put("/api/v1/exchange-rates"), """
+                {"fromCurrency":"USD","toCurrency":"INR","rate":83.12345678,"effectiveFrom":"2026-01-01"}""")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.rate").value("83.12345678"));
+    }
+
+    @Test
+    void endpointsRequireAuthentication() throws Exception {
+        for (var req : List.of(get("/api/v1/settings"), get("/api/v1/me"), get("/api/v1/exchange-rates"))) {
+            mvc.perform(req).andExpect(status().isUnauthorized());
+        }
     }
 }

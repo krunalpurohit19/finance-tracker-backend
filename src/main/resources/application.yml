@@ -31,6 +31,9 @@ spring:
     default-property-inclusion: non_null
     serialization:
       write-dates-as-timestamps: false
+    generator:
+      # Money/rates are BigDecimal fields sent as JSON strings; never "1E-8".
+      write-bigdecimal-as-plain: true
 
 server:
   port: 4000

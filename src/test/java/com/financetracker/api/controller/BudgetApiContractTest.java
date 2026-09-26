@@ -6,11 +6,13 @@ import com.financetracker.api.entity.enums.CategoryKind;
 import com.financetracker.api.repository.BudgetRepository;
 import com.financetracker.api.repository.CategoryRepository;
 import com.financetracker.api.repository.TransactionRepository;
+import com.financetracker.api.service.BudgetService;
 import com.financetracker.api.support.WebSliceTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
@@ -41,6 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * screen reads amount/spent/remaining as money strings and percentUsed as a number.
  */
 @WebMvcTest(BudgetController.class)
+@Import(BudgetService.class)
 class BudgetApiContractTest extends WebSliceTest {
 
     @MockitoBean BudgetRepository budgetRepo;
@@ -208,5 +211,51 @@ class BudgetApiContractTest extends WebSliceTest {
            .andExpect(status().isOk())
            .andExpect(content().json("{\"ok\":true,\"data\":{\"id\":\"b-food\"}}", JsonCompareMode.STRICT));
         assertThat(b.getDeletedAt()).isNotNull();
+    }
+
+    // ── Input validation: 422 VALIDATION_FAILED with field errors (was 500) ──
+
+    private void expectFieldError(ResultActions r, String field, String message) throws Exception {
+        r.andExpect(status().is(422))
+         .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
+         .andExpect(jsonPath("$.error.fieldErrors['" + field + "'][0]").value(message));
+    }
+
+    @Test
+    void createValidatesAmount() throws Exception {
+        String tail = ",\"effectiveFrom\":\"2026-09-01\"}";
+        expectFieldError(send(post("/api/v1/budgets"), "{\"effectiveFrom\":\"2026-09-01\"}"), "amount", "Enter an amount");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"0\"" + tail), "amount", "Amount must be greater than zero");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"-5\"" + tail), "amount", "Amount must be greater than zero");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1.23456\"" + tail), "amount",
+                "Enter a valid amount with up to 4 decimal places");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"lots\"" + tail), "amount", "Invalid value");
+        expectFieldError(send(post("/api/v1/budgets"), "{\"amount\":\"1\",\"categoryId\":\"\"" + tail), "categoryId", "Choose a category");
+        verify(budgetRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void createWithUnknownCategoryIs404() throws Exception {
+        send(post("/api/v1/budgets"), """
+                {"categoryId":"someone-elses","amount":"1","effectiveFrom":"2026-09-01"}""")
+            .andExpect(status().isNotFound())
+            .andExpect(content().json("""
+                {"ok":false,"error":{"code":"NOT_FOUND","message":"Category not found"}}""", JsonCompareMode.STRICT));
+        verify(budgetRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void updateValidatesAmount() throws Exception {
+        expectFieldError(send(patch("/api/v1/budgets/b-food"), "{\"amount\":\"0\"}"), "amount", "Amount must be greater than zero");
+    }
+
+    @Test
+    void queryParamsAreValidated() throws Exception {
+        for (String months : List.of("0", "25")) {
+            expectFieldError(mvc.perform(get("/api/v1/budgets/history").param("months", months).with(asUser())),
+                    "months", "Between 1 and 24 months");
+        }
+        expectFieldError(mvc.perform(get("/api/v1/budgets/history").param("months", "six").with(asUser())), "months", "Invalid value");
+        expectFieldError(mvc.perform(get("/api/v1/budgets").param("month", "2026-13").with(asUser())), "month", "Invalid value");
     }
 }

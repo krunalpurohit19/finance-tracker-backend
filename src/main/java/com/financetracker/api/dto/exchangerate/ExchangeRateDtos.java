@@ -1,6 +1,6 @@
 package com.financetracker.api.dto.exchangerate;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
+import com.financetracker.api.dto.DecimalString;
 import com.financetracker.api.dto.Inputs;
 import com.financetracker.api.entity.ExchangeRate;
 import jakarta.validation.constraints.DecimalMin;
@@ -36,7 +36,7 @@ public final class ExchangeRateDtos {
     }
 
     public record ExchangeRateResponse(String id, String fromCurrency, String toCurrency,
-                                       @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal rate,
+                                       @DecimalString BigDecimal rate,
                                        LocalDate effectiveFrom) {
         public static ExchangeRateResponse of(ExchangeRate r) {
             return new ExchangeRateResponse(r.getId(), r.getFromCurrency(), r.getToCurrency(), r.getRate(),

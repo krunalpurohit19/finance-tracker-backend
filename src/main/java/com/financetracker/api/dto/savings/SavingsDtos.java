@@ -1,5 +1,6 @@
 package com.financetracker.api.dto.savings;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.financetracker.api.dto.DecimalString;
 import com.financetracker.api.dto.Inputs;
 import com.financetracker.api.entity.GoalContribution;
@@ -72,7 +73,7 @@ public final class SavingsDtos {
             @NotNull(message = "Enter an amount")
             @Digits(integer = 14, fraction = 4, message = "Enter a valid amount with up to 4 decimal places")
             BigDecimal amount,
-            @NotNull(message = "Required") LocalDate occurredOn,
+            LocalDate occurredOn, // defaults to today: the mobile client sends only {amount}
             @Size(max = 200, message = "Keep this under 200 characters") String notes) {
         public ContributeRequest { notes = Inputs.strip(notes); }
     }
@@ -87,8 +88,9 @@ public final class SavingsDtos {
 
     public record MonthSaved(String month, @DecimalString BigDecimal saved) {}
 
+    /** {@code rate} is null (not omitted) for a month without income, matching the mobile type {@code number | null}. */
     public record TrendPoint(String month, @DecimalString BigDecimal income, @DecimalString BigDecimal expenses,
-                             @DecimalString BigDecimal saved, BigDecimal rate) {}
+                             @DecimalString BigDecimal saved, @JsonInclude(JsonInclude.Include.ALWAYS) BigDecimal rate) {}
 
     public record GoalResponse(String id, String name, @DecimalString BigDecimal targetAmount,
                                @DecimalString BigDecimal saved, @DecimalString BigDecimal remaining,

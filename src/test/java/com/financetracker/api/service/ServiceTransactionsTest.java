@@ -22,7 +22,7 @@ class ServiceTransactionsTest {
     static final Set<String> QUERY_PREFIXES = Set.of("get", "list", "history", "me");
 
     @ParameterizedTest
-    @ValueSource(classes = {SettingsService.class, ExchangeRateService.class, BudgetService.class, SavingsService.class})
+    @ValueSource(classes = {SettingsService.class, ExchangeRateService.class, BudgetService.class, SavingsService.class, RecurringService.class})
     void everyPublicMethodDeclaresItsTransaction(Class<?> service) {
         for (Method m : service.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers())) continue;

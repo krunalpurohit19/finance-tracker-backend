@@ -15,11 +15,13 @@ import com.financetracker.api.repository.FinancialAccountRepository;
 import com.financetracker.api.repository.RecurringTransactionRepository;
 import com.financetracker.api.repository.TransactionRepository;
 import com.financetracker.api.repository.UserSettingsRepository;
+import com.financetracker.api.service.RecurringService;
 import com.financetracker.api.support.WebSliceTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
@@ -50,6 +52,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Bodies are compared STRICTLY; generated transactions are inspected field by field.
  */
 @WebMvcTest(RecurringController.class)
+@Import(RecurringService.class)
 class RecurringApiContractTest extends WebSliceTest {
 
     @MockitoBean RecurringTransactionRepository recurringRepo;
@@ -286,5 +289,57 @@ class RecurringApiContractTest extends WebSliceTest {
         mvc.perform(post("/api/v1/recurring/generate").with(asUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.data.generated").value(0));
+    }
+
+    // ── Input validation: 422 VALIDATION_FAILED with field errors (was 500) ──
+
+    private void expectFieldError(ResultActions r, String field, String message) throws Exception {
+        r.andExpect(status().is(422))
+         .andExpect(jsonPath("$.error.code").value("VALIDATION_FAILED"))
+         .andExpect(jsonPath("$.error.fieldErrors['" + field + "'][0]").value(message));
+    }
+
+    static final String VALID = """
+            {"name":"Rent","type":"EXPENSE","amount":"25000","accountId":"a-chk","frequency":"MONTHLY","startOn":"2026-10-01"
+            """.strip();
+
+    @Test
+    void createValidatesEveryField() throws Exception {
+        String url = "/api/v1/recurring";
+        expectFieldError(send(post(url), VALID.replace("\"name\":\"Rent\"", "\"name\":\" \"") + "}"), "name", "Required");
+        expectFieldError(send(post(url), VALID.replace("\"EXPENSE\"", "\"GIFT\"") + "}"), "type", "Invalid value");
+        expectFieldError(send(post(url), VALID.replace("\"25000\"", "\"0\"") + "}"), "amount", "Amount must be greater than zero");
+        expectFieldError(send(post(url), VALID.replace("\"25000\"", "\"1.00001\"") + "}"), "amount",
+                "Enter a valid amount with up to 4 decimal places");
+        expectFieldError(send(post(url), VALID.replace("\"MONTHLY\"", "\"HOURLY\"") + "}"), "frequency", "Invalid value");
+        expectFieldError(send(post(url), VALID + ",\"interval\":0}"), "interval", "Between 1 and 365");
+        expectFieldError(send(post(url), VALID + ",\"interval\":366}"), "interval", "Between 1 and 365");
+        expectFieldError(send(post(url), VALID + ",\"dayOfMonth\":0}"), "dayOfMonth", "Between 1 and 31");
+        expectFieldError(send(post(url), VALID + ",\"dayOfMonth\":32}"), "dayOfMonth", "Between 1 and 31");
+        expectFieldError(send(post(url), VALID + ",\"currency\":\"rupees\"}"), "currency", "Enter a 3-letter currency code");
+        expectFieldError(send(post(url), VALID + ",\"merchant\":\"" + "m".repeat(121) + "\"}"), "merchant", "Keep this under 120 characters");
+        expectFieldError(send(post(url), VALID.replace(",\"startOn\":\"2026-10-01\"", "") + "}"), "startOn", "Required");
+        expectFieldError(send(post(url), VALID.replace("\"accountId\":\"a-chk\",", "") + "}"), "accountId", "Choose an account");
+        verify(recurringRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void createWithUnknownAccountIs404() throws Exception {
+        send(post("/api/v1/recurring"), VALID.replace("a-chk", "someone-elses") + "}")
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.error.message").value("Account not found"));
+    }
+
+    @Test
+    void patchValidatesAndLeavesAbsentFieldsAlone() throws Exception {
+        RecurringTransaction r1 = rule("r1", Frequency.MONTHLY, LocalDate.of(2026, 10, 1));
+        r1.setEndOn(LocalDate.of(2027, 1, 1));
+        when(recurringRepo.findByIdAndUserIdAndDeletedAtIsNull("r1", USER_ID)).thenReturn(Optional.of(r1));
+
+        expectFieldError(send(patch("/api/v1/recurring/r1"), "{\"amount\":\"-1\"}"), "amount", "Amount must be greater than zero");
+        expectFieldError(send(patch("/api/v1/recurring/r1"), "{\"name\":\"\"}"), "name", "Required");
+        send(patch("/api/v1/recurring/r1"), "{\"isActive\":false}").andExpect(jsonPath("$.data.isActive").value(false));
+        assertThat(r1.getEndOn()).isEqualTo(LocalDate.of(2027, 1, 1)); // absent ≠ null
+        assertThat(r1.getName()).isEqualTo("Rule r1");
     }
 }

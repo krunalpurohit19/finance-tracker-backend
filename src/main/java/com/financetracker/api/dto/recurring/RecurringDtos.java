@@ -57,8 +57,9 @@ public final class RecurringDtos {
     }
 
     /**
-     * PATCH: a field left out is left unchanged; {@code endOn: null} removes the end date. A class, not a
-     * record, so an absent Optional stays null (see SavingsDtos.UpdateGoalRequest).
+     * PATCH: a field left out is left unchanged; {@code endOn: null} removes the end date and
+     * {@code categoryId: null} the category. A class, not a record, so an absent Optional stays null
+     * (see SavingsDtos.UpdateGoalRequest). Resuming a paused rule skips the dates it was paused for.
      */
     @Getter @Setter
     public static class UpdateRecurringRequest {
@@ -69,26 +70,41 @@ public final class RecurringDtos {
         private BigDecimal amount;
         private Boolean isActive;
         private Optional<LocalDate> endOn;
+        private Optional<@Size(min = 1, max = 64, message = "Choose a category") String> categoryId;
+        @Size(max = 120, message = "Keep this under 120 characters")
+        private String merchant;
+        @Size(max = 500, message = "Keep this under 500 characters")
+        private String notes;
 
         public void setName(String name) { this.name = Inputs.strip(name); }
+        public void setMerchant(String merchant) { this.merchant = Inputs.strip(merchant); }
+        public void setNotes(String notes) { this.notes = Inputs.strip(notes); }
     }
 
     // ── Responses ────────────────────────────────────────────────────────
 
     public record RecurringResponse(String id, String name, TransactionType type, @DecimalString BigDecimal amount,
-                                    String currency, String accountId, String transferAccountId, String categoryId,
-                                    String merchant, Frequency frequency, int interval, LocalDate startOn,
-                                    LocalDate endOn, Integer dayOfMonth, LocalDate nextOccurrence, boolean isActive,
+                                    String currency, String accountId, String accountName, String transferAccountId,
+                                    String categoryId, String categoryName, String merchant, Frequency frequency,
+                                    int interval, LocalDate startOn, LocalDate endOn, Integer dayOfMonth,
+                                    LocalDate nextOccurrence, LocalDate lastGenerated, boolean isActive,
                                     boolean autoPost) {
         public static RecurringResponse of(RecurringTransaction r) {
             return new RecurringResponse(r.getId(), r.getName(), r.getType(), r.getAmount(), r.getCurrency(),
-                    r.getAccount().getId(),
+                    r.getAccount().getId(), r.getAccount().getName(),
                     r.getTransferAccount() != null ? r.getTransferAccount().getId() : null,
                     r.getCategory() != null ? r.getCategory().getId() : null,
+                    r.getCategory() != null ? r.getCategory().getName() : null,
                     r.getMerchant(), r.getFrequency(), r.getInterval(), r.getStartOn(), r.getEndOn(),
-                    r.getDayOfMonth(), r.getNextOccurrence(), r.isActive(), r.isAutoPost());
+                    r.getDayOfMonth(), r.getNextOccurrence(), r.getLastGenerated(), r.isActive(), r.isAutoPost());
         }
     }
 
-    public record GenerationResult(int generated) {}
+    /**
+     * What one generate call did. {@code created}: transactions posted ({@code generated} is the legacy
+     * name for the same number). {@code skipped}: due rules held back this run — no exchange rate for the
+     * date, an archived or deleted account, or a currency that doesn't match the account; they catch up
+     * once fixed. {@code rulesProcessed}: due rules examined.
+     */
+    public record GenerationResult(int generated, int created, int skipped, int rulesProcessed) {}
 }

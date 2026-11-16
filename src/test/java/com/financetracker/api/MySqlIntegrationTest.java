@@ -1,7 +1,16 @@
 package com.financetracker.api;
 
 import com.financetracker.api.dto.account.AccountDtos.CreateAccountRequest;
+import com.financetracker.api.controller.PublicPagesController;
+import com.financetracker.api.dto.auth.RecoveryDtos.ResetPasswordRequest;
+import com.financetracker.api.dto.auth.SignInRequest;
 import com.financetracker.api.dto.auth.SignUpRequest;
+import com.financetracker.api.exception.ApiException;
+import com.financetracker.api.repository.UserRepository;
+import com.financetracker.api.service.AccountRecoveryService;
+import com.financetracker.api.service.Mailer;
+import org.mockito.ArgumentCaptor;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import com.financetracker.api.dto.recurring.RecurringDtos.CreateRecurringRequest;
 import com.financetracker.api.dto.transaction.TransactionDtos.CreateTransactionRequest;
 import com.financetracker.api.dto.transaction.TransactionDtos.TransactionPage;
@@ -37,6 +46,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * The whole application against a real MySQL 8.4 (Testcontainers; skipped when Docker isn't running).
@@ -61,8 +75,13 @@ class MySqlIntegrationTest {
     @Autowired ReportService reports;
     @Autowired FinancialAccountRepository accountRepo;
     @Autowired JdbcTemplate jdbc;
+    @Autowired AccountRecoveryService recovery;
+    @Autowired PublicPagesController pages;
+    @Autowired UserRepository users;
+    @MockitoBean Mailer mailer; // capture the emailed codes instead of sending them
 
     String userId;
+    String email;
     String bank;
     String cash;
 
@@ -70,7 +89,8 @@ class MySqlIntegrationTest {
     void newUser() {
         SignUpRequest signUp = new SignUpRequest();
         signUp.setName("IT");
-        signUp.setEmail(UUID.randomUUID() + "@example.test");
+        email = UUID.randomUUID() + "@example.test";
+        signUp.setEmail(email);
         signUp.setPassword("long-enough-password");
         userId = auth.signUp(signUp).getUser().getId();
         bank = account("Bank", "1000");
@@ -146,6 +166,72 @@ class MySqlIntegrationTest {
         assertThat(recurring.generate(userId).created()).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND recurring_id IS NOT NULL",
                 Integer.class, userId)).isEqualTo(3);
+    }
+
+    @Test
+    void aRetriedCreateWithTheSameIdempotencyKeyPostsOnce() {
+        var req = new CreateTransactionRequest(TransactionType.EXPENSE, new BigDecimal("75"), bank, null, null, null,
+                DAY, null, null, null);
+        String first = transactions.create(userId, req, "key-1").id();
+        assertThat(transactions.create(userId, req, "key-1").id()).isEqualTo(first);
+        assertThat(transactions.create(userId, req, "key-2").id()).isNotEqualTo(first);
+        assertThat(accounts.get(userId, bank).balance()).isEqualByComparingTo("850"); // 1000 − 75 − 75
+    }
+
+    @Test
+    void passwordResetByEmailedCode() {
+        recovery.requestPasswordReset(email);
+        String code = lastEmailedCode();
+        String wrong = code.equals("000000") ? "111111" : "000000";
+
+        assertThatThrownBy(() -> recovery.resetPassword(new ResetPasswordRequest(email, wrong, "a-brand-new-password")))
+                .isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT attempts FROM email_codes WHERE user_id = ? AND purpose = 'RESET_PASSWORD'",
+                Integer.class, userId)).isEqualTo(1); // counted although the request failed
+
+        recovery.resetPassword(new ResetPasswordRequest(email, code, "a-brand-new-password"));
+        SignInRequest signIn = new SignInRequest();
+        signIn.setEmail(email);
+        signIn.setPassword("a-brand-new-password");
+        assertThat(auth.signIn(signIn).getAccessToken()).isNotBlank();
+        // one use only
+        assertThatThrownBy(() -> recovery.resetPassword(new ResetPasswordRequest(email, code, "yet-another-password")))
+                .isInstanceOf(ApiException.class);
+        // an unknown address gets no email and no error
+        recovery.requestPasswordReset("nobody@example.test");
+        verify(mailer, times(1)).send(any(), any(), any());
+    }
+
+    @Test
+    void emailVerificationByCodeAndFiveWrongGuessesBurnIt() {
+        recovery.sendVerification(userId);
+        String code = lastEmailedCode();
+        String wrong = code.equals("000000") ? "111111" : "000000";
+        for (int i = 0; i < 5; i++) {
+            assertThatThrownBy(() -> recovery.verifyEmail(userId, wrong)).isInstanceOf(ApiException.class);
+        }
+        assertThatThrownBy(() -> recovery.verifyEmail(userId, code)).isInstanceOf(ApiException.class); // burnt
+        assertThat(users.findById(userId).orElseThrow().isEmailVerified()).isFalse();
+
+        recovery.sendVerification(userId);
+        recovery.verifyEmail(userId, lastEmailedCode());
+        assertThat(users.findById(userId).orElseThrow().isEmailVerified()).isTrue();
+    }
+
+    @Test
+    void theWebPageDeletesOnlyWithTheRightPassword() {
+        assertThat(pages.deleteAccount(email, "not-the-password")).contains("don't match");
+        assertThat(users.findById(userId).orElseThrow().getDeletedAt()).isNull();
+        assertThat(pages.deleteAccount(email, "long-enough-password")).contains("Your account is deleted");
+        assertThat(users.findById(userId).orElseThrow().getDeletedAt()).isNotNull();
+    }
+
+    private String lastEmailedCode() {
+        var text = ArgumentCaptor.forClass(String.class);
+        verify(mailer, atLeastOnce()).send(eq(email), any(), text.capture());
+        var m = java.util.regex.Pattern.compile("\\b(\\d{6})\\b").matcher(text.getValue());
+        assertThat(m.find()).isTrue();
+        return m.group(1);
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────

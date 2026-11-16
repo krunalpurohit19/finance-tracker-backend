@@ -8,4 +8,5 @@ FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 COPY --from=builder /app/target/*.jar app.jar
 EXPOSE 4000
+ENV SPRING_PROFILES_ACTIVE=prod
 ENTRYPOINT ["java", "-jar", "app.jar"]

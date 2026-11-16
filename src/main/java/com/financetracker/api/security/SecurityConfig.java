@@ -41,7 +41,10 @@ public class SecurityConfig {
         http
             .headers(headers -> headers
                 .xssProtection(xss -> xss.headerValue(org.springframework.security.web.header.writers.XXssProtectionHeaderWriter.HeaderValue.ENABLED_MODE_BLOCK))
-                .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'"))
+                // Nothing loads from anywhere else. 'self' scripts/styles are for the API docs and the two static pages.
+                .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'; script-src 'self'; "
+                        + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+                        + "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"))
                 .frameOptions(frameOptions -> frameOptions.deny())
                 .httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31536000))
             )
@@ -66,6 +69,9 @@ public class SecurityConfig {
                 .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                 .requestMatchers("/health/**").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
+                // Public pages Google Play links to, and the API reference.
+                .requestMatchers("/delete-account", "/delete-account.html", "/privacy", "/privacy.html").permitAll()
+                .requestMatchers("/docs", "/docs/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated()
             )

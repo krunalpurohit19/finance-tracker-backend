@@ -9,6 +9,7 @@ import com.financetracker.api.service.TransactionService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -45,8 +46,11 @@ public class TransactionController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public ApiEnvelope.Success<TransactionResponse> create(@Valid @RequestBody CreateTransactionRequest body) {
-        return new ApiEnvelope.Success<>(txService.create(SecurityUtils.currentUserId(), body));
+    public ApiEnvelope.Success<TransactionResponse> create(
+            @Valid @RequestBody CreateTransactionRequest body,
+            @RequestHeader(value = "Idempotency-Key", required = false)
+            @Size(min = 1, max = 64, message = "Up to 64 characters") String idempotencyKey) {
+        return new ApiEnvelope.Success<>(txService.create(SecurityUtils.currentUserId(), body, idempotencyKey));
     }
 
     @PatchMapping("/{id}")

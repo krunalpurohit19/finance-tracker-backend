@@ -42,4 +42,12 @@ public interface RecurringTransactionRepository extends JpaRepository<RecurringT
         ORDER BY r.nextOccurrence
     """)
     List<RecurringTransaction> findUpcoming(String userId);
+
+    /** Users with at least one active rule due by {@code until}: the nightly job's work list. */
+    @Query("""
+        SELECT DISTINCT r.user.id FROM RecurringTransaction r
+        WHERE r.isActive = true AND r.deletedAt IS NULL AND r.nextOccurrence <= :until
+          AND r.user.deletedAt IS NULL
+    """)
+    List<String> findUserIdsWithDueRules(LocalDate until);
 }

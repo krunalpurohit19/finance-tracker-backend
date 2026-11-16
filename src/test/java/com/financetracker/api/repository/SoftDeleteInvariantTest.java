@@ -30,7 +30,10 @@ class SoftDeleteInvariantTest {
             "UserRepository.findByEmail", "sign-in rejects deleted users itself; emails stay unique across them",
             "UserRepository.existsByEmail", "emails stay unique across deleted users (uk_users_email)",
             "RefreshTokenRepository.*", "refresh_tokens has no deleted_at (session credentials)",
-            "UserSettingsRepository.*", "user_settings has no deleted_at (1:1 with users)");
+            "UserSettingsRepository.*", "user_settings has no deleted_at (1:1 with users)",
+            "EmailCodeRepository.*", "email_codes has no deleted_at (one-time codes; used_at retires them)",
+            "TransactionRepository.findByUserIdAndIdempotencyKey",
+                    "idempotency: a retried create must find its first attempt even if since deleted");
 
     @Test
     void everyDeclaredReadFiltersSoftDeletedRows() throws Exception {

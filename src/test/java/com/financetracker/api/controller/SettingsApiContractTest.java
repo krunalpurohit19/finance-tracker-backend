@@ -50,6 +50,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({SettingsService.class, ExchangeRateService.class})
 class SettingsApiContractTest extends WebSliceTest {
 
+    @MockitoBean com.financetracker.api.service.AccountRecoveryService recovery;
     @MockitoBean UserSettingsRepository settingsRepo;
     @MockitoBean ExchangeRateRepository rateRepo;
     @MockitoBean RefreshTokenRepository refreshTokenRepo;
@@ -88,7 +89,7 @@ class SettingsApiContractTest extends WebSliceTest {
 
         expectBody(mvc.perform(get("/api/v1/settings").with(asUser())), """
                 {"ok":true,"data":{
-                  "profile":{"id":"%s","name":"Test User","email":"test@example.test","createdAt":"1970-01-01T00:00:00Z"},
+                  "profile":{"id":"%s","name":"Test User","email":"test@example.test","emailVerified":false,"createdAt":"1970-01-01T00:00:00Z"},
                   "preferences":{"baseCurrency":"INR","locale":"en-IN","timezone":"Asia/Kolkata",
                                  "dateFormat":"dd/MM/yyyy","theme":"SYSTEM","weekStartsOn":1},
                   "counts":{"accounts":1,"categories":2,"transactions":3,"budgets":4,"goals":5,
@@ -102,7 +103,7 @@ class SettingsApiContractTest extends WebSliceTest {
         mvc.perform(get("/api/v1/settings").with(asUser(nameless)))
            .andExpect(status().isOk())
            .andExpect(content().json("""
-                   {"ok":true,"data":{"profile":{"id":"%s","email":"test@example.test","createdAt":"1970-01-01T00:00:00Z"}}}"""
+                   {"ok":true,"data":{"profile":{"id":"%s","email":"test@example.test","emailVerified":false,"createdAt":"1970-01-01T00:00:00Z"}}}"""
                    .formatted(USER_ID), JsonCompareMode.LENIENT))
            .andExpect(r -> assertThat(r.getResponse().getContentAsString()).doesNotContain("\"name\""));
     }
@@ -113,7 +114,7 @@ class SettingsApiContractTest extends WebSliceTest {
     void meReturnsUserAndSettings() throws Exception {
         expectBody(mvc.perform(get("/api/v1/me").with(asUser())), """
                 {"ok":true,"data":{
-                  "user":{"id":"%s","name":"Test User","email":"test@example.test"},
+                  "user":{"id":"%s","name":"Test User","email":"test@example.test","emailVerified":false},
                   "settings":{"baseCurrency":"INR","locale":"en-IN","timezone":"Asia/Kolkata",
                               "dateFormat":"dd/MM/yyyy","theme":"SYSTEM","weekStartsOn":1}}}""".formatted(USER_ID));
     }
@@ -123,7 +124,7 @@ class SettingsApiContractTest extends WebSliceTest {
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.empty());
         when(settingsRepo.findForUpdate(USER_ID)).thenReturn(Optional.empty());
         expectBody(mvc.perform(get("/api/v1/me").with(asUser())), """
-                {"ok":true,"data":{"user":{"id":"%s","name":"Test User","email":"test@example.test"}}}""".formatted(USER_ID));
+                {"ok":true,"data":{"user":{"id":"%s","name":"Test User","email":"test@example.test","emailVerified":false}}}""".formatted(USER_ID));
     }
 
     // ── PATCH profile / preferences ─────────────────────────────────────

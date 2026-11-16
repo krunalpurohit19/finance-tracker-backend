@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delete your Finance Tracker account</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; color: #111a1c; background: #f6f8f8; margin: 0; padding: 24px 16px; }
+    main { max-width: 440px; margin: 0 auto; background: #fff; border-radius: 20px; padding: 24px; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    label { display: block; font-size: 13px; margin: 16px 0 4px; color: #4d5b5d; }
+    input { width: 100%; box-sizing: border-box; font: inherit; padding: 12px; border: 1px solid #c9d2d3; border-radius: 10px; }
+    button { margin-top: 20px; width: 100%; font: inherit; font-weight: 600; padding: 14px; border: 0; border-radius: 14px; background: #b42318; color: #fff; }
+    ul { padding-left: 20px; } small { color: #4d5b5d; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Delete your account</h1>
+  <p>This permanently closes your Finance Tracker account. You can also do this in the app:
+     <strong>More → Settings → Delete account</strong>.</p>
+  <ul>
+    <li>Your sign-in stops working immediately on every device.</li>
+    <li>Your accounts, transactions, budgets, goals and settings are erased from our systems within 30 days.</li>
+    <li>Backups containing your data expire within a further 30 days.</li>
+  </ul>
+  <form method="post" action="/delete-account">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Delete my account</button>
+  </form>
+  <p><small>Forgot your password? Reset it in the app first (Sign in → Forgot password).</small></p>
+</main>
+</body>
+</html>

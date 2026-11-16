@@ -41,7 +41,7 @@ public class SettingsService {
                 userRepo.countBudgets(userId), userRepo.countGoals(userId), userRepo.countRecurring(userId),
                 userRepo.countExchangeRates(userId));
         return new SettingsResponse(
-                new Profile(userId, user.getName(), user.getEmail(), user.getCreatedAt()),
+                new Profile(userId, user.getName(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt()),
                 Preferences.of(settings(userId)),
                 counts);
     }
@@ -49,7 +49,7 @@ public class SettingsService {
     /** @param user the authenticated principal (read-only use) */
     @Transactional(readOnly = true)
     public MeResponse me(User user) {
-        return new MeResponse(new MeUser(user.getId(), user.getName(), user.getEmail()),
+        return new MeResponse(new MeUser(user.getId(), user.getName(), user.getEmail(), user.isEmailVerified()),
                 settingsRepo.findById(user.getId()).map(Preferences::of).orElse(null));
     }
 

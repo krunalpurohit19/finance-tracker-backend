@@ -34,3 +34,4 @@ build/
 
 ### local DB dumps ###
 backups/
+.env.local

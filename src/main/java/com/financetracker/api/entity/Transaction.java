@@ -80,6 +80,10 @@ public class Transaction {
     @Column(name = "external_id")
     private String externalId;
 
+    /** The client's Idempotency-Key for the create request, unique per user (uk_tx_user_idempotency). */
+    @Column(name = "idempotency_key", length = 64)
+    private String idempotencyKey;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "recurring_id")
     private RecurringTransaction recurring;

@@ -52,7 +52,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         // Only rate limit auth endpoints
-        if (request.getRequestURI().startsWith("/api/auth/")) {
+        // Everything that takes a password or a code from an anonymous caller.
+        if (request.getRequestURI().startsWith("/api/auth/")
+                || request.getRequestURI().equals("/delete-account") && "POST".equals(request.getMethod())) {
             // The connection's address. Behind a proxy, set FORWARD_HEADERS=native so Tomcat fills this from
             // X-Forwarded-For for trusted proxies only; reading the header here would let anyone pick their
             // own bucket and never be limited.

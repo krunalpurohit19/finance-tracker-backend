@@ -1,0 +1,12 @@
+# Production: SPRING_PROFILES_ACTIVE=prod
+# One JSON object per log line (Elastic Common Schema), for the host's log collector.
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    root: INFO
+    com.financetracker: INFO
+
+server:
+  forward-headers-strategy: native   # behind the host's load balancer

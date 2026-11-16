@@ -15,6 +15,9 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
 
     Optional<Transaction> findByIdAndUserIdAndDeletedAtIsNull(String id, String userId);
 
+    /** Deliberately not filtered on deletedAt: a retried create must find its first attempt even if since deleted. */
+    Optional<Transaction> findByUserIdAndIdempotencyKey(String userId, String idempotencyKey);
+
     @Query("""
         SELECT t FROM Transaction t
         WHERE t.user.id = :userId AND t.deletedAt IS NULL

@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(AuthController.class)
 class AuthValidationTest extends WebSliceTest {
 
+    @MockitoBean com.financetracker.api.service.AccountRecoveryService recovery;
     @MockitoBean AuthService authService;
 
     @Test

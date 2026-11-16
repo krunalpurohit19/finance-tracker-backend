@@ -61,7 +61,7 @@ public final class SettingsDtos {
 
     public record SettingsResponse(Profile profile, Preferences preferences, Counts counts) {}
 
-    public record Profile(String id, String name, String email, Instant createdAt) {}
+    public record Profile(String id, String name, String email, boolean emailVerified, Instant createdAt) {}
 
     public record Preferences(String baseCurrency, String locale, String timezone, String dateFormat,
                               ThemePreference theme, int weekStartsOn) {
@@ -77,7 +77,7 @@ public final class SettingsDtos {
     /** {@code settings} is omitted when the user has no settings row. */
     public record MeResponse(MeUser user, Preferences settings) {}
 
-    public record MeUser(String id, String name, String email) {}
+    public record MeUser(String id, String name, String email, boolean emailVerified) {}
 
     public record ProfileUpdated(String name) {}
 

@@ -82,6 +82,21 @@ public class TransactionService {
 
     @Transactional
     public TransactionResponse create(String userId, CreateTransactionRequest req) {
+        return create(userId, req, null);
+    }
+
+    /**
+     * @param idempotencyKey the request's Idempotency-Key header, or null. A retry with the same key (a
+     *                       timeout, a double tap) returns the transaction the first attempt created
+     *                       instead of posting again. Two simultaneous attempts: the unique key makes
+     *                       the loser a 409, and its retry finds the winner.
+     */
+    @Transactional
+    public TransactionResponse create(String userId, CreateTransactionRequest req, String idempotencyKey) {
+        if (idempotencyKey != null) {
+            var earlier = txRepo.findByUserIdAndIdempotencyKey(userId, idempotencyKey);
+            if (earlier.isPresent()) return TransactionResponse.of(earlier.get());
+        }
         // FOR SHARE, and first: a base-currency change (FOR UPDATE) waits for this insert, then sees it.
         UserSettings settings = settingsForShare(userId);
         FinancialAccount account = usableAccount(userId, req.accountId(), "Account not found");
@@ -103,6 +118,7 @@ public class TransactionService {
                 .merchant(req.merchant())
                 .notes(req.notes())
                 .source(TransactionSource.MANUAL)
+                .idempotencyKey(idempotencyKey)
                 .build();
 
         if (req.type() == TransactionType.TRANSFER) {

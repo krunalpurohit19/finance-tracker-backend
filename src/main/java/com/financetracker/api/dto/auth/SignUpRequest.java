@@ -8,10 +8,12 @@ import lombok.Data;
 @Data
 public class SignUpRequest {
     @NotBlank(message = "Required")
+    @Size(max = 80, message = "Keep this under 80 characters")
     private String name;
 
     @NotBlank(message = "Required")
     @Email(message = "Enter a valid email")
+    @Size(max = 255, message = "Enter a valid email")
     private String email;
 
     @NotBlank(message = "Required")

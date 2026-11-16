@@ -2,6 +2,7 @@ package com.financetracker.api.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.DynamicUpdate;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.List;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@DynamicUpdate // write only changed columns, so concurrent single-field PATCHes don't revert each other
 public class User {
 
     @Id

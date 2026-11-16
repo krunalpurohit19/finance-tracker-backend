@@ -85,10 +85,10 @@ class ReportsApiContractTest extends WebSliceTest {
         when(txRepo.sumIncomeAndExpense(USER_ID, LocalDate.of(1000, 1, 1), LocalDate.of(9999, 12, 31)))
                 .thenReturn(rows(row(dec("90000.0000"), dec("60000.5000"))));
         Transaction t = Transaction.builder().id("t1").type(TransactionType.EXPENSE).amount(dec("500.0000"))
-                .currency("INR").baseAmount(dec("500.0000")).account(bank).category(food).merchant("Cafe")
+                .currency("INR").baseAmount(dec("500.0000")).baseCurrency("INR").account(bank).category(food).merchant("Cafe")
                 .occurredOn(LocalDate.of(2026, 3, 9)).build();
         Transaction transfer = Transaction.builder().id("t2").type(TransactionType.TRANSFER).amount(dec("100.0000"))
-                .currency("INR").baseAmount(dec("100.0000")).account(bank).transferAccount(card)
+                .currency("INR").baseAmount(dec("100.0000")).baseCurrency("INR").account(bank).transferAccount(card)
                 .occurredOn(LocalDate.of(2026, 3, 2)).build();
         when(txRepo.findFiltered(eq(USER_ID), any(), any(), any(), eq(FROM), eq(TO), any())).thenReturn(List.of(t, transfer));
 
@@ -196,10 +196,12 @@ class ReportsApiContractTest extends WebSliceTest {
                 {"total":"300.0000","share":15.0,"categoryName":"Uncategorized"}],
               "unconvertedAccounts":[{"currency":"EUR","accountId":"a-eur","balance":"5.0000","name":"Euros"}],
               "recentTransactions":[
-                {"id":"t1","type":"EXPENSE","amount":"500.0000","currency":"INR","baseAmount":"500.0000","categoryId":"c-food",
-                 "categoryName":"Food","accountName":"Bank","merchant":"Cafe","occurredOn":"2026-03-09"},
-                {"id":"t2","type":"TRANSFER","amount":"100.0000","currency":"INR","baseAmount":"100.0000","accountName":"Bank",
-                 "occurredOn":"2026-03-02"}]}}""";
+                {"id":"t1","type":"EXPENSE","amount":"500.0000","currency":"INR","baseAmount":"500.0000","baseCurrency":"INR",
+                 "fxRate":"1","accountId":"a-bank","accountName":"Bank","categoryId":"c-food","categoryName":"Food",
+                 "color":"#ff0000","merchant":"Cafe","occurredOn":"2026-03-09","source":"MANUAL"},
+                {"id":"t2","type":"TRANSFER","amount":"100.0000","currency":"INR","baseAmount":"100.0000","baseCurrency":"INR",
+                 "fxRate":"1","accountId":"a-bank","accountName":"Bank","transferAccountId":"a-card",
+                 "transferAccountName":"Card","occurredOn":"2026-03-02","source":"MANUAL"}]}}""";
     static final String ANALYTICS = """
             {"ok":true,"data":{"baseCurrency":"INR","period":{"preset":"custom","to":"2026-03-31","from":"2026-03-01"},
               "previousPeriod":{"to":"2026-02-28","from":"2026-01-29"},

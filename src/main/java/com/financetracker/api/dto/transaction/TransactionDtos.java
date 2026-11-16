@@ -63,6 +63,10 @@ public final class TransactionDtos {
         @DecimalMin(value = "0", inclusive = false, message = "Amount must be greater than zero")
         @Digits(integer = 14, fraction = 4, message = "Enter a valid amount with up to 4 decimal places")
         private BigDecimal amount;
+        /** Transfers between different currencies only: what arrived in the destination account. */
+        @DecimalMin(value = "0", inclusive = false, message = "Amount must be greater than zero")
+        @Digits(integer = 14, fraction = 4, message = "Enter a valid amount with up to 4 decimal places")
+        private BigDecimal transferAmount;
         private LocalDate occurredOn;
         private Optional<@Size(min = 1, max = 64, message = "Choose a category") String> categoryId;
         @Size(max = 120, message = "Keep this under 120 characters")

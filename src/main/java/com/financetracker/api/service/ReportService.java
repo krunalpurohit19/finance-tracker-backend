@@ -1,6 +1,7 @@
 package com.financetracker.api.service;
 
 import com.financetracker.api.dto.report.ReportDtos.*;
+import com.financetracker.api.dto.transaction.TransactionDtos.TransactionResponse;
 import com.financetracker.api.entity.Category;
 import com.financetracker.api.entity.ExchangeRate;
 import com.financetracker.api.entity.FinancialAccount;
@@ -79,13 +80,10 @@ public class ReportService {
         }
         BigDecimal netWorth = assets.add(liabilities);
 
-        List<RecentTransaction> recent = txRepo
+        // The same shape as /transactions, so the app's transaction row renders both identically.
+        List<TransactionResponse> recent = txRepo
                 .findFiltered(userId, null, null, null, period.from(), period.to(), PageRequest.of(0, 5)).stream()
-                .map(t -> new RecentTransaction(t.getId(), t.getType(), t.getAmount(), t.getCurrency(), t.getBaseAmount(),
-                        t.getCategory() != null ? t.getCategory().getId() : null,
-                        t.getCategory() != null ? t.getCategory().getName() : null,
-                        t.getAccount() != null ? t.getAccount().getName() : null, t.getMerchant(), t.getOccurredOn()))
-                .toList();
+                .map(TransactionResponse::of).toList();
 
         return new DashboardResponse(settings.getBaseCurrency(), period, netWorth, netWorth, assets, liabilities,
                 lifetime[0].subtract(lifetime[1]), sums[0], sums[1], savings, Ratios.percent(savings, sums[0]),
@@ -137,7 +135,7 @@ public class ReportService {
         for (Object[] r : txRepo.sumByAccount(userId, period.from(), period.to())) {
             FinancialAccount a = accounts.get((String) r[0]);
             if (a == null) continue; // deleted account
-            byAccount.add(new AccountActivity(a.getId(), a.getName(), a.getCurrency(), decimal(r[1]), decimal(r[2]),
+            byAccount.add(new AccountActivity(a.getId(), a.getName(), settings.getBaseCurrency(), decimal(r[1]), decimal(r[2]),
                     ((Number) r[3]).intValue()));
         }
 

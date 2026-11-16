@@ -316,6 +316,45 @@ class LedgerApiContractTest extends WebSliceTest {
     }
 
     @Test
+    void reviewFixes() throws Exception {
+        // an fxRate on a base-currency account is ignored, not multiplied in
+        send(post("/api/v1/transactions"), """
+                {"type":"EXPENSE","amount":"100","accountId":"a-bank","occurredOn":"2026-03-09","fxRate":"83.5"}""")
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.baseAmount").value("100.0000"))
+            .andExpect(jsonPath("$.data.fxRate").value("1.00000000"));
+        // a converted amount too large for the column is a 422 on the amount
+        when(rateRepo.findEffectiveRate(USER_ID, "USD", "INR", LocalDate.of(2026, 3, 9)))
+                .thenReturn(Optional.of(ExchangeRate.builder().rate(new BigDecimal("83.00000000")).build()));
+        send(post("/api/v1/transactions"), """
+                {"type":"EXPENSE","amount":"20000000000000","accountId":"a-usd","occurredOn":"2026-03-09"}""")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.amount").exists());
+
+        // a cross-currency transfer: changing what was sent needs what was received
+        Transaction fx = tx("t8");
+        fx.setType(TransactionType.TRANSFER);
+        fx.setCategory(null);
+        fx.setTransferAccount(dollars);
+        fx.setTransferCurrency("USD");
+        fx.setTransferAmount(new BigDecimal("6.0000"));
+        when(txRepo.findByIdAndUserIdAndDeletedAtIsNull("t8", USER_ID)).thenReturn(Optional.of(fx));
+        send(patch("/api/v1/transactions/t8"), "{\"amount\":\"1000\"}")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.transferAmount").exists());
+        send(patch("/api/v1/transactions/t8"), "{\"amount\":\"1000\",\"transferAmount\":\"12\"}")
+            .andExpect(jsonPath("$.data.amount").value("1000.0000")).andExpect(jsonPath("$.data.transferAmount").value("12.0000"));
+
+        // the same Idempotency-Key with different details is refused, not replayed
+        when(txRepo.findByUserIdAndIdempotencyKey(USER_ID, "k1")).thenReturn(Optional.of(tx("t1")));
+        mvc.perform(post("/api/v1/transactions").with(asUser()).header("Idempotency-Key", "k1")
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"type":"EXPENSE","amount":"500","accountId":"a-bank","occurredOn":"2026-03-09"}"""))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value("t1"));
+        mvc.perform(post("/api/v1/transactions").with(asUser()).header("Idempotency-Key", "k1")
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                {"type":"EXPENSE","amount":"50","accountId":"a-bank","occurredOn":"2026-03-09"}"""))
+            .andExpect(status().is(409));
+    }
+
+    @Test
     void editingKeepsTheBookedRateUnlessTheDateMoves() throws Exception {
         Transaction usd = tx("t7");
         usd.setAccount(dollars);

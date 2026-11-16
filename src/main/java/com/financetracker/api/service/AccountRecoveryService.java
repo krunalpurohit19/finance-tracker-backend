@@ -25,14 +25,16 @@ import java.util.UUID;
 
 /**
  * Password reset and email verification with a 6-digit code sent by email. A code lasts 15 minutes,
- * allows 5 wrong guesses, works once, and a user gets at most 5 per hour.
+ * allows 5 wrong guesses and works once; only the newest code is live; a user gets at most 3 an hour
+ * and 6 a day. That caps guessing at 30 tries a day against 1,000,000 codes, per account.
  */
 @Service
 public class AccountRecoveryService {
 
     static final Duration CODE_LIFETIME = Duration.ofMinutes(15);
     static final int MAX_ATTEMPTS = 5;
-    static final int MAX_CODES_PER_HOUR = 5;
+    static final int MAX_CODES_PER_HOUR = 3;
+    static final int MAX_CODES_PER_DAY = 6;
     private static final String BAD_CODE = "That code is wrong or has expired. Request a new one.";
 
     private final UserRepository userRepo;
@@ -87,13 +89,19 @@ public class AccountRecoveryService {
         user.setEmailVerified(true);
     }
 
+    // ponytail: the email is sent inside the request (and its transaction), so an existing address answers
+    // slower than an unknown one and a slow SMTP server holds a DB connection for up to 5s. Sign-up already
+    // reveals which emails exist; move sending to an @Async/outbox if either starts to matter.
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private void issue(User user, Purpose purpose, String subject, String body) {
-        if (codeRepo.countByUserIdAndPurposeAndCreatedAtAfter(user.getId(), purpose,
-                Instant.now().minus(Duration.ofHours(1))) >= MAX_CODES_PER_HOUR) {
+        Instant now = Instant.now();
+        if (codeRepo.countByUserIdAndPurposeAndCreatedAtAfter(user.getId(), purpose, now.minus(Duration.ofHours(1))) >= MAX_CODES_PER_HOUR
+                || codeRepo.countByUserIdAndPurposeAndCreatedAtAfter(user.getId(), purpose, now.minus(Duration.ofDays(1))) >= MAX_CODES_PER_DAY) {
             return; // silently: the caller must not learn anything from the answer
         }
+        codeRepo.retireAll(user.getId(), purpose, now); // only the newest code works
         String code = String.format("%06d", random.nextInt(1_000_000));
         String id = UUID.randomUUID().toString();
         codeRepo.save(EmailCode.builder().id(id).user(user).purpose(purpose).codeHash(hash(id, code))
@@ -110,7 +118,7 @@ public class AccountRecoveryService {
             stored.setAttempts(stored.getAttempts() + 1);
             throw badCode();
         }
-        stored.setUsedAt(Instant.now());
+        codeRepo.retireAll(user.getId(), purpose, Instant.now());
     }
 
     /** Salted with the row id; the code is short-lived and guess-limited, so a fast hash is enough. */

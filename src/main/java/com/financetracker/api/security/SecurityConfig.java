@@ -110,7 +110,7 @@ public class SecurityConfig {
         }
         
         config.setAllowedMethods(List.of("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "Idempotency-Key"));
         config.setAllowCredentials(false); // Disable credentials since we use Bearer tokens
         config.setMaxAge(3600L);
 

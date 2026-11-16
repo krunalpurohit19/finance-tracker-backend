@@ -95,13 +95,23 @@ public class TransactionService {
     public TransactionResponse create(String userId, CreateTransactionRequest req, String idempotencyKey) {
         if (idempotencyKey != null) {
             var earlier = txRepo.findByUserIdAndIdempotencyKey(userId, idempotencyKey);
-            if (earlier.isPresent()) return TransactionResponse.of(earlier.get());
+            if (earlier.isPresent()) {
+                Transaction t = earlier.get();
+                // The same key with different details is a new transaction sent with a stale key, not a retry.
+                if (t.getType() != req.type() || t.getAmount().compareTo(req.amount()) != 0
+                        || !t.getAccount().getId().equals(req.accountId()) || !t.getOccurredOn().equals(req.occurredOn())) {
+                    throw ApiException.conflict("This was already saved with different details. Check your activity before trying again.");
+                }
+                return TransactionResponse.of(t);
+            }
         }
         // FOR SHARE, and first: a base-currency change (FOR UPDATE) waits for this insert, then sees it.
         UserSettings settings = settingsForShare(userId);
         FinancialAccount account = usableAccount(userId, req.accountId(), "Account not found");
         BigDecimal amount = req.amount().setScale(4); // DECIMAL(18,4); @Digits makes this exact
-        BigDecimal fxRate = req.fxRate() != null ? req.fxRate()
+        // An override only means something for a foreign-currency account: base → base is always 1.
+        boolean foreign = !account.getCurrency().equals(settings.getBaseCurrency());
+        BigDecimal fxRate = foreign && req.fxRate() != null ? req.fxRate()
                 : fxRate(userId, account.getCurrency(), settings.getBaseCurrency(), req.occurredOn());
 
         Transaction tx = Transaction.builder()
@@ -154,14 +164,22 @@ public class TransactionService {
 
         boolean dateChanged = req.getOccurredOn() != null && !req.getOccurredOn().equals(tx.getOccurredOn());
         if (req.getOccurredOn() != null) tx.setOccurredOn(req.getOccurredOn());
+        boolean crossCurrency = transfer && !tx.getCurrency().equals(tx.getTransferCurrency());
+        if (req.getTransferAmount() != null && !crossCurrency) {
+            throw invalid("transferAmount", "Only transfers between different currencies have a separate received amount");
+        }
         if (req.getAmount() != null) {
             BigDecimal amount = req.getAmount().setScale(4);
-            // A same-currency transfer moves one amount; keeping the old received amount would unbalance it.
-            if (transfer && tx.getCurrency().equals(tx.getTransferCurrency())) tx.setTransferAmount(amount);
+            // Keeping the old received amount would leave the two accounts out of step.
+            if (crossCurrency && req.getTransferAmount() == null && amount.compareTo(tx.getAmount()) != 0) {
+                throw invalid("transferAmount", "Enter the amount received in " + tx.getTransferCurrency());
+            }
+            if (transfer && !crossCurrency) tx.setTransferAmount(amount);
             tx.setAmount(amount);
         }
+        if (req.getTransferAmount() != null) tx.setTransferAmount(req.getTransferAmount().setScale(4));
         // The rate the transaction was booked at stays, unless a new one is given or the date moved.
-        if (req.getFxRate() != null) {
+        if (req.getFxRate() != null && !tx.getCurrency().equals(tx.getBaseCurrency())) {
             tx.setFxRate(req.getFxRate());
         } else if (dateChanged && !tx.getCurrency().equals(tx.getBaseCurrency())) {
             tx.setFxRate(fxRate(userId, tx.getCurrency(), settings.getBaseCurrency(), tx.getOccurredOn()));
@@ -210,8 +228,17 @@ public class TransactionService {
 
     // ── helpers ──────────────────────────────────────────────────────────
 
+    /** Largest DECIMAL(18,4). */
+    private static final BigDecimal MAX_MONEY = new BigDecimal("99999999999999.9999");
+
     private static BigDecimal baseAmount(BigDecimal amount, BigDecimal fxRate) {
-        return amount.multiply(fxRate).setScale(4, RoundingMode.HALF_UP);
+        return fits(amount.multiply(fxRate).setScale(4, RoundingMode.HALF_UP));
+    }
+
+    /** A converted amount can outgrow the column even when the entered one fits: say so, as a 422. */
+    private static BigDecimal fits(BigDecimal converted) {
+        if (converted.compareTo(MAX_MONEY) > 0) throw invalid("amount", "That amount is too large");
+        return converted;
     }
 
     /** The rate in force on {@code on}; never guessed: 1 would book $100 as ₹100. */
@@ -234,7 +261,7 @@ public class TransactionService {
                 .map(ExchangeRate::getRate)
                 .orElseThrow(() -> invalid("transferAmount",
                         "Enter the amount received in " + to.getCurrency()));
-        return amount.multiply(rate).setScale(4, RoundingMode.HALF_UP);
+        return fits(amount.multiply(rate).setScale(4, RoundingMode.HALF_UP));
     }
 
     private UserSettings settingsForShare(String userId) {

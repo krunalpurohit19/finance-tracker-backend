@@ -41,6 +41,17 @@ class AuthValidationTest extends WebSliceTest {
            .andExpect(status().isOk());
     }
 
+    @Test
+    void anEncodedPathIsStillRateLimited() throws Exception {
+        String ip = "203.0.113.8";
+        for (int i = 0; i < 10; i++) {
+            mvc.perform(post(java.net.URI.create("/api/%61uth/sign-in")).with(r -> { r.setRemoteAddr(ip); return r; })
+                    .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().is(422));
+        }
+        mvc.perform(post(java.net.URI.create("/api/%61uth/sign-in")).with(r -> { r.setRemoteAddr(ip); return r; })
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().is(429));
+    }
+
     private org.springframework.test.web.servlet.ResultActions signIn(String ip, String forwardedFor) throws Exception {
         return mvc.perform(post("/api/auth/sign-in").with(r -> { r.setRemoteAddr(ip); return r; })
                 .header("X-Forwarded-For", forwardedFor).contentType(MediaType.APPLICATION_JSON).content("{}"));

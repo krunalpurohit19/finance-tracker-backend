@@ -1,8 +1,9 @@
 package com.financetracker.api.dto.report;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.financetracker.api.dto.DecimalString;
+import com.financetracker.api.dto.transaction.TransactionDtos.TransactionResponse;
 import com.financetracker.api.entity.enums.AccountType;
-import com.financetracker.api.entity.enums.TransactionType;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -28,10 +29,6 @@ public final class ReportDtos {
 
     // ── dashboard ────────────────────────────────────────────────────────
 
-    public record RecentTransaction(String id, TransactionType type, @DecimalString BigDecimal amount, String currency,
-                                    @DecimalString BigDecimal baseAmount, String categoryId, String categoryName,
-                                    String accountName, String merchant, LocalDate occurredOn) {}
-
     public record DashboardResponse(String baseCurrency, Period period, @DecimalString BigDecimal totalBalance,
                                     @DecimalString BigDecimal netWorth, @DecimalString BigDecimal assets,
                                     @DecimalString BigDecimal liabilities, @DecimalString BigDecimal lifetimeSavings,
@@ -39,7 +36,7 @@ public final class ReportDtos {
                                     @DecimalString BigDecimal savings, BigDecimal savingsRate,
                                     List<CategorySpend> spendingByCategory,
                                     List<UnconvertedAccount> unconvertedAccounts,
-                                    List<RecentTransaction> recentTransactions) {}
+                                    List<TransactionResponse> recentTransactions) {}
 
     // ── analytics ────────────────────────────────────────────────────────
 
@@ -51,10 +48,12 @@ public final class ReportDtos {
 
     public record CategoryChange(String categoryId, String categoryName, String color,
                                  @DecimalString BigDecimal current, @DecimalString BigDecimal previous,
-                                 @DecimalString BigDecimal change, BigDecimal changePercent) {}
+                                 @DecimalString BigDecimal change,
+                                 @JsonInclude(JsonInclude.Include.ALWAYS) BigDecimal changePercent) {}
 
     public record MerchantSpend(String merchant, @DecimalString BigDecimal total, int count) {}
 
+    /** Income and expenses are in the base currency, and {@code currency} says so (the app formats with it). */
     public record AccountActivity(String accountId, String name, String currency, @DecimalString BigDecimal income,
                                   @DecimalString BigDecimal expenses, int transactionCount) {}
 

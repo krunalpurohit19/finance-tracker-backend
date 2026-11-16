@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -53,14 +54,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         // Only rate limit auth endpoints
         // Everything that takes a password or a code from an anonymous caller.
-        if (request.getRequestURI().startsWith("/api/auth/")
-                || request.getRequestURI().equals("/delete-account") && "POST".equals(request.getMethod())) {
+        // The decoded path, as Spring MVC routes it: matching the raw URI let /api/%61uth/... slip past.
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
+        if (path.startsWith("/api/auth/") || path.equals("/delete-account") && "POST".equals(request.getMethod())) {
             // The connection's address. Behind a proxy, set FORWARD_HEADERS=native so Tomcat fills this from
             // X-Forwarded-For for trusted proxies only; reading the header here would let anyone pick their
             // own bucket and never be limited.
             String ip = request.getRemoteAddr();
 
-            Bucket bucket = resolveBucket(ip, request.getRequestURI().equals("/api/auth/refresh"));
+            Bucket bucket = resolveBucket(ip, path.equals("/api/auth/refresh"));
 
             if (!bucket.tryConsume(1)) {
                 response.setStatus(429); // Too Many Requests

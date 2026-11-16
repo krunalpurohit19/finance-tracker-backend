@@ -3,9 +3,10 @@ spring:
     name: finance-tracker-api
 
   datasource:
-    url: jdbc:mysql://localhost:3307/finance_app?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-    username: finance
-    password: finance_local_dev
+    # Defaults match docker-compose.yml (local dev only). Production sets all three.
+    url: ${DB_URL:jdbc:mysql://localhost:3307/finance_app?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${DB_USERNAME:finance}
+    password: ${DB_PASSWORD:finance_local_dev}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10
@@ -39,14 +40,16 @@ spring:
       strict-duplicate-detection: true
 
 server:
-  port: 4000
+  port: ${SERVER_PORT:4000}
+  # "native" behind a reverse proxy / load balancer, so client IPs and https are seen correctly.
+  forward-headers-strategy: ${FORWARD_HEADERS:none}
 
 # --- JWT ---
 app:
   jwt:
     secret: "${JWT_SECRET}"
-    access-token-expiration-ms: 3600000       # 1 hour
-    refresh-token-expiration-ms: 2592000000   # 30 days
+    access-token-expiration-ms: ${JWT_ACCESS_TTL_MS:3600000}       # 1 hour
+    refresh-token-expiration-ms: ${JWT_REFRESH_TTL_MS:2592000000}   # 30 days
 
 # --- Logging ---
 logging:

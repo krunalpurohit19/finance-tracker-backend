@@ -27,4 +27,21 @@ class AuthValidationTest extends WebSliceTest {
            .andExpect(jsonPath("$.error.fieldErrors.name[0]").value("Keep this under 80 characters"));
         verify(authService, never()).signUp(any());
     }
+
+    @Test
+    void refreshHasItsOwnRateLimitAndForwardedForCannotDodgeIt() throws Exception {
+        String ip = "203.0.113.7";
+        for (int i = 0; i < 10; i++) signIn(ip, "198.51.100." + i).andExpect(status().is(422));
+        // The sign-in budget is spent, whatever X-Forwarded-For claims…
+        signIn(ip, "198.51.100.99").andExpect(status().is(429)).andExpect(jsonPath("$.ok").value(false));
+        // …but a signed-in app on the same address can still refresh.
+        mvc.perform(post("/api/auth/refresh").with(r -> { r.setRemoteAddr(ip); return r; })
+                .contentType(MediaType.APPLICATION_JSON).content("{\"refreshToken\":\"t\"}"))
+           .andExpect(status().isOk());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions signIn(String ip, String forwardedFor) throws Exception {
+        return mvc.perform(post("/api/auth/sign-in").with(r -> { r.setRemoteAddr(ip); return r; })
+                .header("X-Forwarded-For", forwardedFor).contentType(MediaType.APPLICATION_JSON).content("{}"));
+    }
 }

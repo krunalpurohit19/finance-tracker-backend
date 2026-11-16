@@ -32,14 +32,19 @@ public class RateLimitFilter extends OncePerRequestFilter {
         this.objectMapper = objectMapper;
     }
 
-    private Bucket resolveBucket(String ip) {
-        return cache.get(ip, this::newBucket);
-    }
+    /** Sign-in/sign-up guesses per minute, per IP. */
+    static final int AUTH_PER_MINUTE = 10;
+    /**
+     * Refreshes per minute, per IP. Counted apart from sign-in: refresh needs a valid token (nothing to
+     * guess), and every phone behind one office or carrier NAT refreshes hourly from the same address.
+     * Sharing the sign-in budget would lock users out of signing in, or sign them out.
+     */
+    static final int REFRESH_PER_MINUTE = 60;
 
-    private Bucket newBucket(String ip) {
-        // Limit to 10 requests per minute for auth endpoints
-        Bandwidth limit = Bandwidth.classic(10, Refill.greedy(10, Duration.ofMinutes(1)));
-        return Bucket.builder().addLimit(limit).build();
+    private Bucket resolveBucket(String ip, boolean refresh) {
+        int perMinute = refresh ? REFRESH_PER_MINUTE : AUTH_PER_MINUTE;
+        return cache.get((refresh ? "refresh:" : "auth:") + ip, k -> Bucket.builder()
+                .addLimit(Bandwidth.classic(perMinute, Refill.greedy(perMinute, Duration.ofMinutes(1)))).build());
     }
 
     @Override
@@ -48,14 +53,12 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         // Only rate limit auth endpoints
         if (request.getRequestURI().startsWith("/api/auth/")) {
+            // The connection's address. Behind a proxy, set FORWARD_HEADERS=native so Tomcat fills this from
+            // X-Forwarded-For for trusted proxies only; reading the header here would let anyone pick their
+            // own bucket and never be limited.
             String ip = request.getRemoteAddr();
-            // Get IP from reverse proxy if behind one
-            String forwardedFor = request.getHeader("X-Forwarded-For");
-            if (forwardedFor != null && !forwardedFor.isEmpty()) {
-                ip = forwardedFor.split(",")[0].trim();
-            }
 
-            Bucket bucket = resolveBucket(ip);
+            Bucket bucket = resolveBucket(ip, request.getRequestURI().equals("/api/auth/refresh"));
 
             if (!bucket.tryConsume(1)) {
                 response.setStatus(429); // Too Many Requests

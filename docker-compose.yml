@@ -4,16 +4,16 @@ services:
     container_name: finance_app_db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_dev
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_dev}
       MYSQL_DATABASE: finance_app
       MYSQL_USER: finance
-      MYSQL_PASSWORD: finance_local_dev
+      MYSQL_PASSWORD: ${DB_PASSWORD:-finance_local_dev}
     ports:
       - "3307:3306"
     volumes:
       - finance_mysqldata:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "finance", "-pfinance_local_dev"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u finance -p$$MYSQL_PASSWORD"]
       interval: 5s
       timeout: 5s
       retries: 10

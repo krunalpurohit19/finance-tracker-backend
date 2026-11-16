@@ -54,7 +54,7 @@ class SavingsApiContractTest extends WebSliceTest {
     @MockitoBean TransactionRepository txRepo;
     @MockitoBean UserSettingsRepository settingsRepo;
 
-    static final LocalDate EPOCH_START = LocalDate.of(1970, 1, 1);
+    static final LocalDate EPOCH_START = LocalDate.of(1000, 1, 1);
     static final LocalDate END_OF_TIME = LocalDate.of(9999, 12, 31);
     final YearMonth thisMonth = YearMonth.now();
 

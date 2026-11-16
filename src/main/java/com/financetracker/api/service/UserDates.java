@@ -11,6 +11,10 @@ import java.time.ZoneOffset;
 /** Calendar dates as the user sees them: "today" in their timezone, not the server's. */
 final class UserDates {
 
+    /** The earliest and latest dates the API accepts (CalendarDateDeserializer): the bounds for "all time". */
+    static final LocalDate MIN_DATE = LocalDate.of(1000, 1, 1);
+    static final LocalDate MAX_DATE = LocalDate.of(9999, 12, 31);
+
     private UserDates() {}
 
     static LocalDate today(Clock clock, UserSettings settings) {

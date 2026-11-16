@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
@@ -36,6 +37,8 @@ import java.util.stream.Collectors;
 public class ReportService {
 
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+    /** DECIMAL(18,4) zero, as MySQL returns an empty SUM: "0.0000", not "0". */
+    private static final BigDecimal ZERO = new BigDecimal("0.0000");
     private static final String UNCATEGORIZED = "Uncategorized";
 
     private final TransactionRepository txRepo;
@@ -43,29 +46,31 @@ public class ReportService {
     private final FinancialAccountRepository accountRepo;
     private final ExchangeRateRepository rateRepo;
     private final CategoryRepository categoryRepo;
+    private final Clock clock;
 
     public ReportService(TransactionRepository txRepo, UserSettingsRepository settingsRepo,
                          FinancialAccountRepository accountRepo, ExchangeRateRepository rateRepo,
-                         CategoryRepository categoryRepo) {
+                         CategoryRepository categoryRepo, Clock clock) {
         this.txRepo = txRepo;
         this.settingsRepo = settingsRepo;
         this.accountRepo = accountRepo;
         this.rateRepo = rateRepo;
         this.categoryRepo = categoryRepo;
+        this.clock = clock;
     }
 
     @Transactional(readOnly = true)
-    public DashboardResponse getDashboard(String userId, String preset, String from, String to) {
+    public DashboardResponse getDashboard(String userId, String preset, LocalDate from, LocalDate to) {
         UserSettings settings = settings(userId);
-        LocalDate today = LocalDate.now();
+        LocalDate today = UserDates.today(clock, settings);
         Period period = Periods.resolve(preset, from, to, today);
 
         BigDecimal[] sums = incomeAndExpense(userId, period.from(), period.to());
         BigDecimal savings = sums[0].subtract(sums[1]);
-        BigDecimal[] lifetime = incomeAndExpense(userId, LocalDate.of(1970, 1, 1), LocalDate.of(9999, 12, 31));
+        BigDecimal[] lifetime = incomeAndExpense(userId, UserDates.MIN_DATE, UserDates.MAX_DATE);
 
-        BigDecimal assets = BigDecimal.ZERO;
-        BigDecimal liabilities = BigDecimal.ZERO;
+        BigDecimal assets = ZERO;
+        BigDecimal liabilities = ZERO;
         List<UnconvertedAccount> unconverted = new ArrayList<>();
         for (Balance b : balances(userId, settings.getBaseCurrency(), today)) {
             if (b.baseBalance() == null) unconverted.add(b.unconverted());
@@ -88,9 +93,9 @@ public class ReportService {
     }
 
     @Transactional(readOnly = true)
-    public AnalyticsResponse getAnalytics(String userId, String preset, String from, String to) {
+    public AnalyticsResponse getAnalytics(String userId, String preset, LocalDate from, LocalDate to) {
         UserSettings settings = settings(userId);
-        Period period = Periods.resolve(preset, from, to, LocalDate.now());
+        Period period = Periods.resolve(preset, from, to, UserDates.today(clock, settings));
         DateRange prev = Periods.previous(period);
 
         BigDecimal[] sums = incomeAndExpense(userId, period.from(), period.to());
@@ -105,7 +110,7 @@ public class ReportService {
         for (Object[] r : txRepo.sumByCategory(userId, TransactionType.EXPENSE, period.from(), period.to())) {
             String id = (String) r[0];
             BigDecimal current = decimal(r[1]);
-            BigDecimal previous = previousByCategory.getOrDefault(id, BigDecimal.ZERO);
+            BigDecimal previous = previousByCategory.getOrDefault(id, ZERO);
             BigDecimal change = current.subtract(previous);
             // No earlier spend to compare with: shown as +100% (existing app behaviour).
             BigDecimal changePercent = previous.signum() > 0 ? Ratios.percent(change, previous)
@@ -144,11 +149,11 @@ public class ReportService {
     @Transactional(readOnly = true)
     public NetWorthResponse getNetWorth(String userId, int months) {
         UserSettings settings = settings(userId);
-        LocalDate today = LocalDate.now();
+        LocalDate today = UserDates.today(clock, settings);
 
         List<Balance> balances = balances(userId, settings.getBaseCurrency(), today);
-        BigDecimal assets = BigDecimal.ZERO;
-        BigDecimal liabilities = BigDecimal.ZERO;
+        BigDecimal assets = ZERO;
+        BigDecimal liabilities = ZERO;
         for (Balance b : balances) {
             if (b.baseBalance() == null) continue;
             if (b.account().getAccountClass() == AccountClass.ASSET) assets = assets.add(b.baseBalance());
@@ -178,16 +183,16 @@ public class ReportService {
         BigDecimal running = netWorth;
         for (int i = 0; i < months; i++) {
             values[months - 1 - i] = running;
-            running = running.subtract(netByMonth.getOrDefault(currentMonth.minusMonths(i).toString(), BigDecimal.ZERO));
+            running = running.subtract(netByMonth.getOrDefault(currentMonth.minusMonths(i).toString(), ZERO));
         }
         List<NetWorthPoint> history = new ArrayList<>();
         for (int i = 0; i < months; i++) {
             BigDecimal v = values[i];
             history.add(new NetWorthPoint(currentMonth.minusMonths(months - 1 - i).toString(),
-                    v.signum() > 0 ? v : BigDecimal.ZERO, v.signum() < 0 ? v : BigDecimal.ZERO, v,
+                    v.signum() > 0 ? v : ZERO, v.signum() < 0 ? v : ZERO, v,
                     i > 0 ? v.subtract(values[i - 1]) : null));
         }
-        BigDecimal monthChange = months >= 2 ? values[months - 1].subtract(values[months - 2]) : BigDecimal.ZERO;
+        BigDecimal monthChange = months >= 2 ? values[months - 1].subtract(values[months - 2]) : ZERO;
         BigDecimal monthChangePercent = months >= 2 ? Ratios.percent(monthChange, values[months - 2]) : null;
 
         return new NetWorthResponse(settings.getBaseCurrency(), today, netWorth, assets, liabilities, monthChange,
@@ -205,12 +210,12 @@ public class ReportService {
         }
 
         NetWorthAccount netWorthAccount(BigDecimal classTotal) {
-            BigDecimal base = baseBalance != null ? baseBalance : BigDecimal.ZERO;
+            BigDecimal base = baseBalance != null ? baseBalance : ZERO;
             // Liabilities are negative on both sides, so the share is still a positive percentage.
-            BigDecimal share = classTotal.signum() == 0 ? BigDecimal.ZERO
+            BigDecimal share = classTotal.signum() == 0 ? ZERO
                     : base.multiply(HUNDRED).divide(classTotal, 2, RoundingMode.HALF_UP);
             return new NetWorthAccount(account.getId(), account.getName(), account.getType(), account.getCurrency(),
-                    false, balance, base, baseBalance != null, share);
+                    account.getArchivedAt() != null, balance, base, baseBalance != null, share);
         }
     }
 
@@ -220,7 +225,7 @@ public class ReportService {
         List<Balance> result = new ArrayList<>();
         for (FinancialAccount a : accountRepo.findActiveByUserId(userId)) {
             BigDecimal movement = txRepo.computeAccountMovement(a.getId());
-            BigDecimal balance = a.getOpeningBalance().add(movement != null ? movement : BigDecimal.ZERO);
+            BigDecimal balance = a.getOpeningBalance().add(movement != null ? movement : ZERO);
             BigDecimal base;
             if (a.getCurrency().equals(baseCurrency)) {
                 base = balance;
@@ -237,14 +242,14 @@ public class ReportService {
     private List<CategorySpend> spendingByCategory(String userId, Period period, Map<String, Category> categories,
                                                    boolean withIcon) {
         List<Object[]> rows = txRepo.sumByCategory(userId, TransactionType.EXPENSE, period.from(), period.to());
-        BigDecimal total = rows.stream().map(r -> decimal(r[1])).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal total = rows.stream().map(r -> decimal(r[1])).reduce(ZERO, BigDecimal::add);
         return rows.stream().map(r -> {
             Category c = categories.get((String) r[0]);
             BigDecimal amount = decimal(r[1]);
             BigDecimal share = Ratios.percent(amount, total);
             return new CategorySpend((String) r[0], c != null ? c.getName() : UNCATEGORIZED,
                     c != null ? c.getColor() : null, withIcon && c != null ? c.getIcon() : null, amount,
-                    share != null ? share : BigDecimal.ZERO);
+                    share != null ? share : ZERO);
         }).sorted(Comparator.comparing(CategorySpend::total).reversed()).toList();
     }
 
@@ -256,7 +261,7 @@ public class ReportService {
     /** {income, expenses} over an inclusive date range. */
     private BigDecimal[] incomeAndExpense(String userId, LocalDate from, LocalDate to) {
         List<Object[]> rows = txRepo.sumIncomeAndExpense(userId, from, to);
-        if (rows.isEmpty()) return new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
+        if (rows.isEmpty()) return new BigDecimal[]{ZERO, ZERO};
         return new BigDecimal[]{decimal(rows.get(0)[0]), decimal(rows.get(0)[1])};
     }
 

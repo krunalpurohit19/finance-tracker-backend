@@ -28,6 +28,10 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
 
+  mvc:
+    format:
+      date: iso   # ?from=2026-03-01 query params
+
   jackson:
     default-property-inclusion: non_null
     serialization:

@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -45,7 +46,7 @@ class ReportsApiContractTest extends WebSliceTest {
 
     static final LocalDate FROM = LocalDate.of(2026, 3, 1);
     static final LocalDate TO = LocalDate.of(2026, 3, 31);
-    static final String PERIOD = "?period=custom&from=2026-03-01&to=2026-03-31";
+    static final String PERIOD = "?preset=custom&from=2026-03-01&to=2026-03-31";
 
     @MockitoBean TransactionRepository txRepo;
     @MockitoBean UserSettingsRepository settingsRepo;
@@ -81,7 +82,7 @@ class ReportsApiContractTest extends WebSliceTest {
     @Test
     void dashboard() throws Exception {
         // lifetime: everything outside the March period
-        when(txRepo.sumIncomeAndExpense(eq(USER_ID), any(), eq(LocalDate.of(9999, 12, 31))))
+        when(txRepo.sumIncomeAndExpense(USER_ID, LocalDate.of(1000, 1, 1), LocalDate.of(9999, 12, 31)))
                 .thenReturn(rows(row(dec("90000.0000"), dec("60000.5000"))));
         Transaction t = Transaction.builder().id("t1").type(TransactionType.EXPENSE).amount(dec("500.0000"))
                 .currency("INR").baseAmount(dec("500.0000")).account(bank).category(food).merchant("Cafe")
@@ -117,9 +118,51 @@ class ReportsApiContractTest extends WebSliceTest {
         when(txRepo.monthlyTrend(eq(USER_ID), any(), any())).thenReturn(List.of());
         mvc.perform(get("/api/v1/net-worth?months=2").with(asUser()))
            .andExpect(status().isOk())
-           .andExpect(content().json(NET_WORTH.replace("{today}", LocalDate.now().toString())
-                   .replace("{m0}", java.time.YearMonth.now().toString())
-                   .replace("{m1}", java.time.YearMonth.now().minusMonths(1).toString()), JsonCompareMode.STRICT));
+           .andExpect(content().json(NET_WORTH.replace("{today}", LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString())
+                   .replace("{m0}", java.time.YearMonth.now(java.time.ZoneId.of("Asia/Kolkata")).toString())
+                   .replace("{m1}", java.time.YearMonth.now(java.time.ZoneId.of("Asia/Kolkata")).minusMonths(1).toString()), JsonCompareMode.STRICT));
+    }
+
+    @Test
+    void legacyPeriodParamStillWorksAndBadPeriodsAre422() throws Exception {
+        when(txRepo.findFiltered(any(), any(), any(), any(), any(), any(), any())).thenReturn(List.of());
+        mvc.perform(get("/api/v1/dashboard?period=custom&from=2026-03-01&to=2026-03-31").with(asUser()))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.data.income").value("5000.0000"));
+        mvc.perform(get("/api/v1/dashboard?preset=next-decade").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.preset").exists());
+        mvc.perform(get("/api/v1/analytics?preset=custom&from=2026-03-01").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.from").exists());
+        mvc.perform(get("/api/v1/analytics?preset=custom&from=2026-04-01&to=2026-03-01").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.to").exists());
+        mvc.perform(get("/api/v1/dashboard?preset=custom&from=yesterday&to=2026-03-01").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.from").exists());
+        mvc.perform(get("/api/v1/net-worth?months=100000").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.months").exists());
+    }
+
+    @Test
+    void emptyAccountReportsZeroesAndAMonthWithoutIncomeHasNoRate() throws Exception {
+        when(accountRepo.findActiveByUserId(USER_ID)).thenReturn(List.of());
+        when(txRepo.sumIncomeAndExpense(any(), any(), any())).thenReturn(List.of());
+        when(txRepo.sumByCategory(any(), any(), any(), any())).thenReturn(List.of());
+        when(txRepo.findFiltered(any(), any(), any(), any(), any(), any(), any())).thenReturn(List.of());
+        when(txRepo.monthlyTrend(USER_ID, FROM, TO)).thenReturn(rows(row("2026-03", dec("0.0000"), dec("40.0000"))));
+        mvc.perform(get("/api/v1/dashboard" + PERIOD).with(asUser()))
+           .andExpect(jsonPath("$.data.netWorth").value("0.0000")).andExpect(jsonPath("$.data.income").value("0.0000"))
+           .andExpect(jsonPath("$.data.savingsRate").doesNotExist());
+        mvc.perform(get("/api/v1/analytics" + PERIOD).with(asUser()))
+           .andExpect(status().isOk()) // was a 500: Map.of() rejects the null rate
+           .andExpect(jsonPath("$.data.monthly[0].net").value("-40.0000"))
+           .andExpect(jsonPath("$.data.monthly[0].savingsRate").doesNotExist());
+    }
+
+    @Test
+    void archivedAccountsAreFlaggedInNetWorth() throws Exception {
+        bank.setArchivedAt(java.time.Instant.EPOCH);
+        when(txRepo.monthlyTrend(eq(USER_ID), any(), any())).thenReturn(List.of());
+        mvc.perform(get("/api/v1/net-worth?months=1").with(asUser()))
+           .andExpect(jsonPath("$.data.assetAccounts[0].archived").value(true))
+           .andExpect(jsonPath("$.data.assetAccounts[1].archived").value(false));
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────
@@ -167,8 +210,8 @@ class ReportsApiContractTest extends WebSliceTest {
                 {"total":"500.0000","color":"#ff0000","share":25.0,"categoryName":"Food","categoryId":"c-food"},
                 {"total":"300.0000","share":15.0,"categoryName":"Uncategorized"}],
               "categoryChange":[
-                {"current":"1200.0000","previous":"0","change":"1200.0000","changePercent":100.0,"categoryName":"Rent","categoryId":"c-rent"},
-                {"current":"300.0000","previous":"0","change":"300.0000","changePercent":100.0,"categoryName":"Uncategorized"},
+                {"current":"1200.0000","previous":"0.0000","change":"1200.0000","changePercent":100.0,"categoryName":"Rent","categoryId":"c-rent"},
+                {"current":"300.0000","previous":"0.0000","change":"300.0000","changePercent":100.0,"categoryName":"Uncategorized"},
                 {"current":"500.0000","color":"#ff0000","previous":"1000.0000","change":"-500.0000","changePercent":-50.0,
                  "categoryName":"Food","categoryId":"c-food"}],
               "topMerchants":[{"count":3,"merchant":"Cafe","total":"500.0000"}],
@@ -178,15 +221,15 @@ class ReportsApiContractTest extends WebSliceTest {
             {"ok":true,"data":{"baseCurrency":"INR","asOf":"{today}","netWorth":"2000.0000","assets":"2300.0000",
               "liabilities":"-300.0000","monthChange":"0.0000","monthChangePercent":0.0,
               "history":[
-                {"assets":"2000.0000","month":"{m1}","netWorth":"2000.0000","liabilities":"0"},
-                {"assets":"2000.0000","month":"{m0}","netWorth":"2000.0000","change":"0.0000","liabilities":"0"}],
+                {"assets":"2000.0000","month":"{m1}","netWorth":"2000.0000","liabilities":"0.0000"},
+                {"assets":"2000.0000","month":"{m0}","netWorth":"2000.0000","change":"0.0000","liabilities":"0.0000"}],
               "assetAccounts":[
                 {"accountId":"a-bank","archived":false,"balance":"1500.0000","name":"Bank","convertible":true,"currency":"INR",
                  "share":65.22,"type":"BANK","baseBalance":"1500.0000"},
                 {"accountId":"a-usd","archived":false,"balance":"10.0000","name":"Dollars","convertible":true,"currency":"USD",
                  "share":34.78,"type":"WALLET","baseBalance":"800.0000"},
                 {"accountId":"a-eur","archived":false,"balance":"5.0000","name":"Euros","convertible":false,"currency":"EUR",
-                 "share":0.0,"type":"CASH","baseBalance":"0"}],
+                 "share":0.0,"type":"CASH","baseBalance":"0.0000"}],
               "liabilityAccounts":[
                 {"accountId":"a-card","archived":false,"balance":"-300.0000","name":"Card","convertible":true,"currency":"INR",
                  "share":100.0,"type":"CREDIT_CARD","baseBalance":"-300.0000"}],

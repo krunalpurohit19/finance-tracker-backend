@@ -28,8 +28,6 @@ import java.util.UUID;
 @Service
 public class SavingsService {
 
-    private static final LocalDate EPOCH_START = LocalDate.of(1970, 1, 1);
-    private static final LocalDate END_OF_TIME = LocalDate.of(9999, 12, 31);
     /** Largest DECIMAL(18,4), and the most the mobile money() accepts (14 integer digits). */
     private static final BigDecimal MAX_SAVED = new BigDecimal("99999999999999.9999");
     /** DECIMAL(18,4) zero, as MySQL returns an empty SUM. */
@@ -56,7 +54,7 @@ public class SavingsService {
         String baseCurrency = settingsRepo.findById(userId)
                 .orElseThrow(() -> ApiException.notFound("Settings not found")).getBaseCurrency();
 
-        BigDecimal[] lifetime = incomeAndExpense(userId, EPOCH_START, END_OF_TIME);
+        BigDecimal[] lifetime = incomeAndExpense(userId, UserDates.MIN_DATE, UserDates.MAX_DATE);
         YearMonth ym = YearMonth.now();
         BigDecimal[] month = incomeAndExpense(userId, ym.atDay(1), ym.atEndOfMonth());
         BigDecimal thisMonth = month[0].subtract(month[1]);

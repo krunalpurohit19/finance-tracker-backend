@@ -1,6 +1,7 @@
 package com.financetracker.api.service;
 
 import com.financetracker.api.entity.UserSettings;
+import com.financetracker.api.repository.UserSettingsRepository;
 
 import java.time.Clock;
 import java.time.DateTimeException;
@@ -19,6 +20,11 @@ final class UserDates {
 
     static LocalDate today(Clock clock, UserSettings settings) {
         return LocalDate.now(clock.withZone(zone(settings)));
+    }
+
+    /** Today for {@code userId}; UTC if they have no settings row. */
+    static LocalDate today(Clock clock, UserSettingsRepository settingsRepo, String userId) {
+        return settingsRepo.findById(userId).map(s -> today(clock, s)).orElseGet(() -> LocalDate.now(clock));
     }
 
     /** The user's zone; UTC if a legacy row holds something the tz database doesn't know. */

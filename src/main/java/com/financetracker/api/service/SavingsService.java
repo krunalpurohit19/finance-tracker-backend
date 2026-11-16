@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -38,14 +39,21 @@ public class SavingsService {
     private final TransactionRepository txRepo;
     private final UserSettingsRepository settingsRepo;
     private final UserRepository userRepo;
+    private final Clock clock;
 
     public SavingsService(SavingsGoalRepository goalRepo, GoalContributionRepository contribRepo,
-                          TransactionRepository txRepo, UserSettingsRepository settingsRepo, UserRepository userRepo) {
+                          TransactionRepository txRepo, UserSettingsRepository settingsRepo, UserRepository userRepo,
+                          Clock clock) {
         this.goalRepo = goalRepo;
         this.contribRepo = contribRepo;
         this.txRepo = txRepo;
         this.settingsRepo = settingsRepo;
         this.userRepo = userRepo;
+        this.clock = clock;
+    }
+
+    private LocalDate today(String userId) {
+        return UserDates.today(clock, settingsRepo, userId);
     }
 
     /** Savings = income − expenses (base currency; transfers excluded): lifetime, this month, last 12 months. */
@@ -55,7 +63,7 @@ public class SavingsService {
                 .orElseThrow(() -> ApiException.notFound("Settings not found")).getBaseCurrency();
 
         BigDecimal[] lifetime = incomeAndExpense(userId, UserDates.MIN_DATE, UserDates.MAX_DATE);
-        YearMonth ym = YearMonth.now();
+        YearMonth ym = YearMonth.from(today(userId));
         BigDecimal[] month = incomeAndExpense(userId, ym.atDay(1), ym.atEndOfMonth());
         BigDecimal thisMonth = month[0].subtract(month[1]);
 
@@ -88,13 +96,13 @@ public class SavingsService {
         for (Object[] r : contribRepo.sumByGoalIds(goals.stream().map(SavingsGoal::getId).toList())) {
             saved.put((String) r[0], decimal(r[1]));
         }
-        LocalDate today = LocalDate.now();
+        LocalDate today = today(userId);
         return goals.stream().map(g -> progress(g, saved.getOrDefault(g.getId(), ZERO), today)).toList();
     }
 
     @Transactional(readOnly = true)
     public GoalResponse getGoal(String userId, String id) {
-        return toResponse(goal(userId, id));
+        return toResponse(userId, goal(userId, id));
     }
 
     @Transactional
@@ -110,7 +118,7 @@ public class SavingsService {
                 .status(GoalStatus.ACTIVE)
                 .build();
         goalRepo.save(goal);
-        return progress(goal, ZERO, LocalDate.now()); // nothing contributed yet
+        return progress(goal, ZERO, today(userId)); // nothing contributed yet
     }
 
     @Transactional
@@ -127,7 +135,7 @@ public class SavingsService {
             if (req.getStatus() != GoalStatus.ARCHIVED) goal.setArchivedAt(null);
             else if (goal.getArchivedAt() == null) goal.setArchivedAt(Instant.now());
         }
-        return toResponse(goal);
+        return toResponse(userId, goal);
     }
 
     @Transactional
@@ -135,7 +143,7 @@ public class SavingsService {
         SavingsGoal goal = goal(userId, id);
         goal.setStatus(GoalStatus.ARCHIVED);
         goal.setArchivedAt(Instant.now());
-        return toResponse(goal);
+        return toResponse(userId, goal);
     }
 
     @Transactional
@@ -165,7 +173,7 @@ public class SavingsService {
                 .user(userRepo.getReferenceById(userId))
                 .goal(goal)
                 .amount(req.amount().setScale(4))
-                .occurredOn(req.occurredOn() != null ? req.occurredOn() : LocalDate.now())
+                .occurredOn(req.occurredOn() != null ? req.occurredOn() : today(userId))
                 .notes(req.notes())
                 .build();
         return ContributionResponse.of(contribRepo.save(c)); // the saved copy carries createdAt
@@ -187,9 +195,9 @@ public class SavingsService {
 
     // ── helpers ──────────────────────────────────────────────────────────
 
-    private GoalResponse toResponse(SavingsGoal g) {
+    private GoalResponse toResponse(String userId, SavingsGoal g) {
         BigDecimal saved = contribRepo.sumByGoalId(g.getId());
-        return progress(g, saved, LocalDate.now());
+        return progress(g, saved, today(userId));
     }
 
     /** Progress toward the target and, for a deadline, what it takes to get there from {@code today}. */

@@ -50,6 +50,7 @@ class BudgetApiContractTest extends WebSliceTest {
     @MockitoBean BudgetRepository budgetRepo;
     @MockitoBean TransactionRepository txRepo;
     @MockitoBean CategoryRepository categoryRepo;
+    @MockitoBean com.financetracker.api.repository.UserSettingsRepository settingsRepo;
 
     static final LocalDate SEP_1 = LocalDate.of(2026, 9, 1);
     static final LocalDate SEP_30 = LocalDate.of(2026, 9, 30);
@@ -58,6 +59,8 @@ class BudgetApiContractTest extends WebSliceTest {
 
     @BeforeEach
     void setUp() {
+        when(settingsRepo.findById(USER_ID)).thenReturn(java.util.Optional.of(
+                com.financetracker.api.entity.UserSettings.builder().userId(USER_ID).build()));
         food = Category.builder().id("c-food").name("Food").kind(CategoryKind.EXPENSE).color("#FF7A00").build();
         when(categoryRepo.findByIdAndUserIdAndDeletedAtIsNull("c-food", USER_ID)).thenReturn(Optional.of(food));
         when(budgetRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));

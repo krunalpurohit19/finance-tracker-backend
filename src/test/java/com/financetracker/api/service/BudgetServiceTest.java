@@ -39,6 +39,8 @@ class BudgetServiceTest {
     @Mock TransactionRepository txRepo;
     @Mock CategoryRepository categoryRepo;
     @Mock UserRepository userRepo;
+    @Mock com.financetracker.api.repository.UserSettingsRepository settingsRepo;
+    @org.mockito.Spy java.time.Clock clock = java.time.Clock.systemDefaultZone();
     @InjectMocks BudgetService service;
 
     // ── status thresholds: NEAR_LIMIT from 85%, EXCEEDED from 100% ──

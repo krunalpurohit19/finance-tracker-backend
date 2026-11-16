@@ -11,10 +11,12 @@ import com.financetracker.api.repository.BudgetRepository;
 import com.financetracker.api.repository.CategoryRepository;
 import com.financetracker.api.repository.TransactionRepository;
 import com.financetracker.api.repository.UserRepository;
+import com.financetracker.api.repository.UserSettingsRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -38,13 +40,22 @@ public class BudgetService {
     private final TransactionRepository txRepo;
     private final CategoryRepository categoryRepo;
     private final UserRepository userRepo;
+    private final UserSettingsRepository settingsRepo;
+    private final Clock clock;
 
     public BudgetService(BudgetRepository budgetRepo, TransactionRepository txRepo, CategoryRepository categoryRepo,
-                         UserRepository userRepo) {
+                         UserRepository userRepo, UserSettingsRepository settingsRepo, Clock clock) {
         this.budgetRepo = budgetRepo;
         this.txRepo = txRepo;
         this.categoryRepo = categoryRepo;
         this.userRepo = userRepo;
+        this.settingsRepo = settingsRepo;
+        this.clock = clock;
+    }
+
+    /** The current month where the user is, not where the server is. */
+    private YearMonth thisMonth(String userId) {
+        return YearMonth.from(UserDates.today(clock, settingsRepo, userId));
     }
 
     /**
@@ -54,7 +65,7 @@ public class BudgetService {
      */
     @Transactional(readOnly = true)
     public List<BudgetProgress> list(String userId, YearMonth month) {
-        YearMonth ym = month != null ? month : YearMonth.now();
+        YearMonth ym = month != null ? month : thisMonth(userId);
         LocalDate start = ym.atDay(1);
         LocalDate end = ym.atEndOfMonth();
         List<Budget> budgets = budgetRepo.findEffectiveForMonth(userId, start, end);
@@ -78,7 +89,7 @@ public class BudgetService {
     @Transactional(readOnly = true)
     public List<MonthSpend> history(String userId, int months, String categoryId) {
         List<MonthSpend> result = new ArrayList<>();
-        YearMonth current = YearMonth.now();
+        YearMonth current = thisMonth(userId);
         // ponytail: one SUM per month (≤ 24, bounded by the controller); a GROUP BY month query if it ever matters.
         for (int i = 0; i < months; i++) {
             YearMonth ym = current.minusMonths(i);
@@ -90,7 +101,7 @@ public class BudgetService {
     @Transactional
     public BudgetResponse create(String userId, CreateBudgetRequest req) {
         Category category = req.categoryId() != null ? expenseCategory(userId, req.categoryId()) : null;
-        LocalDate from = req.effectiveFrom() != null ? req.effectiveFrom() : YearMonth.now().atDay(1);
+        LocalDate from = req.effectiveFrom() != null ? req.effectiveFrom() : thisMonth(userId).atDay(1);
         checkRange(from, req.effectiveTo());
         checkNoOverlap(userId, req.categoryId(), "", from, req.effectiveTo());
         Budget budget = Budget.builder()

@@ -1,5 +1,6 @@
 package com.financetracker.api.support;
 
+import com.financetracker.api.config.TimeConfig;
 import com.financetracker.api.entity.User;
 import com.financetracker.api.repository.UserRepository;
 import com.financetracker.api.security.JwtTokenProvider;
@@ -30,7 +31,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * mocked here: stub the inherited fields, never re-declare them (that fails with
  * NoUniqueBeanDefinitionException from jwtAuthFilter).
  */
-@Import({SecurityConfig.class, WebSliceTest.DistinctClientIps.class})
+@Import({SecurityConfig.class, TimeConfig.class, WebSliceTest.DistinctClientIps.class})
 public abstract class WebSliceTest {
 
     protected static final String USER_ID = "00000000-0000-0000-0000-000000000001";

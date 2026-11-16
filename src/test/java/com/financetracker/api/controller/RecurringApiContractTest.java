@@ -123,10 +123,10 @@ class RecurringApiContractTest extends WebSliceTest {
            .andExpect(status().isOk())
            .andExpect(content().json("""
                 {"ok":true,"data":[
-                  {"id":"r1","name":"Rule r1","type":"EXPENSE","amount":"100.0000","currency":"INR","accountId":"a-chk",
-                   "categoryId":"c-rent","merchant":"Landlord","frequency":"MONTHLY","interval":1,"startOn":"2026-10-01",
+                  {"id":"r1","name":"Rule r1","type":"EXPENSE","amount":"100.0000","currency":"INR","accountId":"a-chk","accountName":"Checking",
+                   "categoryId":"c-rent","categoryName":"Rent","merchant":"Landlord","frequency":"MONTHLY","interval":1,"startOn":"2026-10-01",
                    "endOn":"2027-09-01","dayOfMonth":1,"nextOccurrence":"2026-10-01","isActive":true,"autoPost":true},
-                  {"id":"r2","name":"Rule r2","type":"TRANSFER","amount":"100.0000","currency":"INR","accountId":"a-chk",
+                  {"id":"r2","name":"Rule r2","type":"TRANSFER","amount":"100.0000","currency":"INR","accountId":"a-chk","accountName":"Checking",
                    "transferAccountId":"a-sav","frequency":"WEEKLY","interval":2,"startOn":"2026-10-03",
                    "nextOccurrence":"2026-10-03","isActive":false,"autoPost":true}]}""", JsonCompareMode.STRICT));
     }
@@ -138,7 +138,7 @@ class RecurringApiContractTest extends WebSliceTest {
            .andExpect(status().isOk())
            .andExpect(content().json("""
                 {"ok":true,"data":[{"id":"r1","name":"Rule r1","type":"EXPENSE","amount":"100.0000","currency":"INR",
-                  "accountId":"a-chk","frequency":"DAILY","interval":1,"startOn":"2026-10-01",
+                  "accountId":"a-chk","accountName":"Checking","frequency":"DAILY","interval":1,"startOn":"2026-10-01",
                   "nextOccurrence":"2026-10-01","isActive":true,"autoPost":true}]}""", JsonCompareMode.STRICT));
     }
 
@@ -152,7 +152,7 @@ class RecurringApiContractTest extends WebSliceTest {
         r.andExpect(status().isCreated())
          .andExpect(content().json("""
                 {"ok":true,"data":{"id":"%s","name":"Rent","type":"EXPENSE","amount":"25000.0000","currency":"INR",
-                  "accountId":"a-chk","categoryId":"c-rent","merchant":"Landlord","frequency":"MONTHLY","interval":1,
+                  "accountId":"a-chk","accountName":"Checking","categoryId":"c-rent","categoryName":"Rent","merchant":"Landlord","frequency":"MONTHLY","interval":1,
                   "startOn":"2026-10-01","dayOfMonth":1,"nextOccurrence":"2026-10-01","isActive":true,"autoPost":true}}"""
                  .formatted(saved.getValue().getId()), JsonCompareMode.STRICT));
     }
@@ -168,7 +168,7 @@ class RecurringApiContractTest extends WebSliceTest {
             .andExpect(status().isOk())
             .andExpect(content().json("""
                 {"ok":true,"data":{"id":"r1","name":"Rent (new flat)","type":"EXPENSE","amount":"27000.0000",
-                  "currency":"INR","accountId":"a-chk","frequency":"MONTHLY","interval":1,"startOn":"2026-10-01",
+                  "currency":"INR","accountId":"a-chk","accountName":"Checking","frequency":"MONTHLY","interval":1,"startOn":"2026-10-01",
                   "nextOccurrence":"2026-10-01","isActive":false,"autoPost":true}}""", JsonCompareMode.STRICT));
         assertThat(r1.getEndOn()).isNull();
     }
@@ -250,6 +250,8 @@ class RecurringApiContractTest extends WebSliceTest {
     void generateConvertsForeignCurrencyAtTheRateInForce() throws Exception {
         RecurringTransaction usd = rule("r1", Frequency.MONTHLY, today);
         usd.setCurrency("USD");
+        // A rule posts in its account's currency, so a USD rule needs a USD account.
+        usd.setAccount(FinancialAccount.builder().id("a-usd").name("Dollars").currency("USD").build());
         when(recurringRepo.findDue(USER_ID, today)).thenReturn(List.of(usd));
         when(rateRepo.findEffectiveRate(USER_ID, "USD", "INR", today))
                 .thenReturn(Optional.of(ExchangeRate.builder().rate(new BigDecimal("83.25000000")).build()));

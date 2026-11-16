@@ -1,12 +1,18 @@
 package com.financetracker.api.controller;
 
 import com.financetracker.api.dto.ApiEnvelope;
+import com.financetracker.api.dto.IdResponse;
+import com.financetracker.api.dto.transaction.TransactionDtos.*;
+import com.financetracker.api.entity.enums.TransactionType;
 import com.financetracker.api.security.SecurityUtils;
 import com.financetracker.api.service.TransactionService;
-import org.springframework.http.ResponseEntity;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api/v1/transactions")
@@ -19,41 +25,47 @@ public class TransactionController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> list(@RequestParam Map<String, String> query) {
-        return ResponseEntity.ok(new ApiEnvelope.Success<>(
-                txService.list(SecurityUtils.currentUserId(), query)));
+    public ApiEnvelope.Success<TransactionPage> list(
+            @RequestParam(required = false) TransactionType type,
+            @RequestParam(required = false) String accountId,
+            @RequestParam(required = false) String categoryId,
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "50") @Min(value = 1, message = "Between 1 and 100")
+            @Max(value = 100, message = "Between 1 and 100") int limit) {
+        return new ApiEnvelope.Success<>(txService.list(SecurityUtils.currentUserId(), type, accountId, categoryId,
+                from, to, cursor, limit));
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> get(@PathVariable String id) {
-        return ResponseEntity.ok(new ApiEnvelope.Success<>(
-                txService.get(SecurityUtils.currentUserId(), id)));
+    public ApiEnvelope.Success<TransactionResponse> get(@PathVariable String id) {
+        return new ApiEnvelope.Success<>(txService.get(SecurityUtils.currentUserId(), id));
     }
 
     @PostMapping
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> create(@RequestBody Map<String, Object> body) {
-        return ResponseEntity.status(201).body(new ApiEnvelope.Success<>(
-                txService.create(SecurityUtils.currentUserId(), body)));
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiEnvelope.Success<TransactionResponse> create(@Valid @RequestBody CreateTransactionRequest body) {
+        return new ApiEnvelope.Success<>(txService.create(SecurityUtils.currentUserId(), body));
     }
 
     @PatchMapping("/{id}")
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> update(
-            @PathVariable String id, @RequestBody Map<String, Object> body) {
-        return ResponseEntity.ok(new ApiEnvelope.Success<>(
-                txService.update(SecurityUtils.currentUserId(), id, body)));
+    public ApiEnvelope.Success<TransactionResponse> update(@PathVariable String id,
+                                                           @Valid @RequestBody UpdateTransactionRequest body) {
+        return new ApiEnvelope.Success<>(txService.update(SecurityUtils.currentUserId(), id, body));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> remove(@PathVariable String id) {
-        return ResponseEntity.ok(new ApiEnvelope.Success<>(
-                txService.remove(SecurityUtils.currentUserId(), id)));
+    public ApiEnvelope.Success<IdResponse> remove(@PathVariable String id) {
+        txService.remove(SecurityUtils.currentUserId(), id);
+        return new ApiEnvelope.Success<>(new IdResponse(id));
     }
 
     @PostMapping("/{id}/duplicate")
-    public ResponseEntity<ApiEnvelope.Success<Map<String, Object>>> duplicate(
-            @PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        String occurredOn = body != null ? (String) body.get("occurredOn") : null;
-        return ResponseEntity.status(201).body(new ApiEnvelope.Success<>(
-                txService.duplicate(SecurityUtils.currentUserId(), id, occurredOn)));
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiEnvelope.Success<TransactionResponse> duplicate(@PathVariable String id,
+                                                              @RequestBody(required = false) DuplicateRequest body) {
+        return new ApiEnvelope.Success<>(txService.duplicate(SecurityUtils.currentUserId(), id,
+                body != null ? body.occurredOn() : null));
     }
 }

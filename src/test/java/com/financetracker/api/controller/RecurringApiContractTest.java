@@ -77,6 +77,7 @@ class RecurringApiContractTest extends WebSliceTest {
         when(accountRepo.findByIdAndUserIdAndDeletedAtIsNull("a-sav", USER_ID)).thenReturn(Optional.of(savings));
         when(categoryRepo.findByIdAndUserIdAndDeletedAtIsNull("c-rent", USER_ID)).thenReturn(Optional.of(rent));
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.of(UserSettings.builder().userId(USER_ID).build()));
+        when(settingsRepo.findForShare(USER_ID)).thenReturn(Optional.of(UserSettings.builder().userId(USER_ID).build()));
         when(recurringRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(txRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(txRepo.findByRecurringIdAndOccurrenceOn(anyString(), any())).thenReturn(Optional.empty());

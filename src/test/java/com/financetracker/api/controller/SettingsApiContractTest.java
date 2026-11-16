@@ -61,6 +61,7 @@ class SettingsApiContractTest extends WebSliceTest {
     void setUp() {
         settings = UserSettings.builder().userId(USER_ID).build(); // INR, en-IN, Asia/Kolkata, dd/MM/yyyy, SYSTEM, 1
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.of(settings));
+        when(settingsRepo.findForUpdate(USER_ID)).thenReturn(Optional.of(settings));
         when(userRepository.findByIdAndDeletedAtIsNull(USER_ID)).thenReturn(Optional.of(testUser()));
         when(rateRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
@@ -120,6 +121,7 @@ class SettingsApiContractTest extends WebSliceTest {
     @Test
     void meOmitsSettingsWhenMissing() throws Exception {
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.empty());
+        when(settingsRepo.findForUpdate(USER_ID)).thenReturn(Optional.empty());
         expectBody(mvc.perform(get("/api/v1/me").with(asUser())), """
                 {"ok":true,"data":{"user":{"id":"%s","name":"Test User","email":"test@example.test"}}}""".formatted(USER_ID));
     }
@@ -160,6 +162,7 @@ class SettingsApiContractTest extends WebSliceTest {
     @Test
     void missingSettingsRowIs404NotServerError() throws Exception {
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.empty());
+        when(settingsRepo.findForUpdate(USER_ID)).thenReturn(Optional.empty());
         mvc.perform(get("/api/v1/settings").with(asUser()))
            .andExpect(status().isNotFound())
            .andExpect(content().json("""

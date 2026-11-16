@@ -66,6 +66,7 @@ class LedgerApiContractTest extends WebSliceTest {
     @BeforeEach
     void setUp() {
         when(settingsRepo.findById(USER_ID)).thenReturn(Optional.of(UserSettings.builder().userId(USER_ID).build()));
+        when(settingsRepo.findForShare(USER_ID)).thenReturn(Optional.of(UserSettings.builder().userId(USER_ID).build()));
         bank = FinancialAccount.builder().id("a-bank").name("Bank").type(AccountType.BANK).accountClass(AccountClass.ASSET)
                 .currency("INR").openingBalance(new BigDecimal("1000.0000")).institution("HDFC").last4("1234")
                 .color("#112233").icon("bank").isDefault(true).createdAt(Instant.EPOCH).build();
@@ -107,7 +108,6 @@ class LedgerApiContractTest extends WebSliceTest {
                 {"name":"Wallet","type":"CREDIT_CARD","currency":"inr","openingBalance":"-12.5","last4":"9876","isDefault":false}""");
         var saved = ArgumentCaptor.forClass(FinancialAccount.class);
         verify(accountRepo).save(saved.capture());
-        when(txRepo.computeAccountMovement(saved.getValue().getId())).thenReturn(null);
         expect(r, 201, "accountCreate", saved.getValue().getId());
     }
 
@@ -173,7 +173,8 @@ class LedgerApiContractTest extends WebSliceTest {
         t2.setTransferCurrency("USD");
         t2.setMerchant(null);
         t2.setNotes(null);
-        when(txRepo.findFiltered(eq(USER_ID), any(), any(), any(), any(), any(), any())).thenReturn(List.of(t1, t2, tx("t3")));
+        when(txRepo.findPage(eq(USER_ID), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(List.of(t1, t2, tx("t3")));
         when(txRepo.findByIdAndUserIdAndDeletedAtIsNull("t1", USER_ID)).thenReturn(Optional.of(t1));
         expect(mvc.perform(get("/api/v1/transactions?limit=2").with(asUser())), 200, "txList");
         expect(mvc.perform(get("/api/v1/transactions/t1").with(asUser())), 200, "txGet");
@@ -220,6 +221,117 @@ class LedgerApiContractTest extends WebSliceTest {
                 422, "txSameAccount");
     }
 
+    // ── fixes ────────────────────────────────────────────────────────────
+
+    @Test
+    void badInputIs422NotA500() throws Exception {
+        send(post("/api/v1/accounts"), "{\"name\":\" \",\"type\":\"BANK\",\"currency\":\"rupees\",\"openingBalance\":\"1.23456\",\"last4\":\"12\"}")
+            .andExpect(status().is(422))
+            .andExpect(jsonPath("$.error.fieldErrors.name").exists()).andExpect(jsonPath("$.error.fieldErrors.currency").exists())
+            .andExpect(jsonPath("$.error.fieldErrors.openingBalance").exists()).andExpect(jsonPath("$.error.fieldErrors.last4").exists());
+        send(post("/api/v1/accounts"), "{}").andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.type").exists());
+        send(post("/api/v1/accounts"), "{\"name\":\"x\",\"type\":\"PIGGY\",\"currency\":\"INR\"}").andExpect(status().is(422));
+        send(post("/api/v1/accounts/reorder"), "{}").andExpect(status().is(422));
+        send(post("/api/v1/categories"), "{\"name\":\"x\"}").andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.kind").exists());
+        mvc.perform(get("/api/v1/categories?kind=SIDEWAYS").with(asUser())).andExpect(status().is(422));
+        send(post("/api/v1/transactions"), "{}").andExpect(status().is(422))
+            .andExpect(jsonPath("$.error.fieldErrors.amount").exists()).andExpect(jsonPath("$.error.fieldErrors.occurredOn").exists());
+        send(post("/api/v1/transactions"), """
+                {"type":"EXPENSE","amount":"-5","accountId":"a-bank","occurredOn":"2026-03-09"}""")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.amount[0]").value("Amount must be greater than zero"));
+        send(post("/api/v1/transactions"), """
+                {"type":"EXPENSE","amount":"5","accountId":"a-bank","occurredOn":"09/03/2026"}""").andExpect(status().is(422));
+        mvc.perform(get("/api/v1/transactions?limit=5000").with(asUser())).andExpect(status().is(422));
+        mvc.perform(get("/api/v1/transactions?type=GIFT").with(asUser())).andExpect(status().is(422));
+        mvc.perform(get("/api/v1/transactions?from=soon").with(asUser())).andExpect(status().is(422));
+        mvc.perform(get("/api/v1/transactions?cursor=nope").with(asUser()))
+           .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.cursor").exists());
+        org.mockito.Mockito.verify(txRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void theCursorContinuesAfterTheLastRowOfThePreviousPage() throws Exception {
+        Transaction last = tx("t2");
+        last.setUser(testUser());
+        when(txRepo.findById("t2")).thenReturn(Optional.of(last));
+        when(txRepo.findPage(eq(USER_ID), any(), any(), any(), any(), any(), eq(last.getOccurredOn()),
+                eq(last.getCreatedAt()), eq("t2"), any())).thenReturn(List.of(tx("t3")));
+        mvc.perform(get("/api/v1/transactions?limit=2&cursor=t2").with(asUser()))
+           .andExpect(jsonPath("$.data.items.length()").value(1)).andExpect(jsonPath("$.data.items[0].id").value("t3"))
+           .andExpect(jsonPath("$.data.nextCursor").doesNotExist());
+
+        // someone else's transaction id is not a cursor
+        last.setUser(com.financetracker.api.entity.User.builder().id("other").build());
+        mvc.perform(get("/api/v1/transactions?cursor=t2").with(asUser())).andExpect(status().is(422));
+    }
+
+    @Test
+    void aNewDefaultAccountReplacesTheOldOne() throws Exception {
+        when(accountRepo.findActiveByUserId(USER_ID)).thenReturn(List.of(bank, dollars));
+        send(patch("/api/v1/accounts/a-usd"), "{\"isDefault\":true}").andExpect(jsonPath("$.data.isDefault").value(true));
+        assertThat(bank.isDefault()).isFalse();
+        assertThat(dollars.isDefault()).isTrue();
+    }
+
+    @Test
+    void categoryRulesForTransactionsAndParents() throws Exception {
+        send(post("/api/v1/transactions"), """
+                {"type":"INCOME","amount":"5","accountId":"a-bank","categoryId":"c-food","occurredOn":"2026-03-09"}""")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.categoryId[0]").value("Choose an income category"));
+        send(post("/api/v1/transactions"), """
+                {"type":"EXPENSE","amount":"5","accountId":"a-bank","categoryId":"c-gone","occurredOn":"2026-03-09"}""")
+            .andExpect(status().isNotFound());
+        when(txRepo.findByIdAndUserIdAndDeletedAtIsNull("t1", USER_ID)).thenReturn(Optional.of(tx("t1")));
+        send(patch("/api/v1/transactions/t1"), "{\"categoryId\":\"c-gone\"}").andExpect(status().isNotFound()); // was: silently cleared
+        send(post("/api/v1/categories"), "{\"name\":\"Bonus\",\"kind\":\"INCOME\",\"parentId\":\"c-food\"}")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.parentId").exists());
+    }
+
+    @Test
+    void transfersStayBalanced() throws Exception {
+        // different currencies and no amount received: converted at the saved rate, never 10 USD → 10 INR
+        when(rateRepo.findEffectiveRate(USER_ID, "USD", "INR", LocalDate.of(2026, 3, 9)))
+                .thenReturn(Optional.of(ExchangeRate.builder().rate(new BigDecimal("83.25000000")).build()));
+        send(post("/api/v1/transactions"), """
+                {"type":"TRANSFER","amount":"10","accountId":"a-usd","transferAccountId":"a-bank","occurredOn":"2026-03-09"}""")
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.transferAmount").value("832.5000"));
+        // ...and with no rate either, the app is asked for it
+        send(post("/api/v1/transactions"), """
+                {"type":"TRANSFER","amount":"10","accountId":"a-bank","transferAccountId":"a-usd","occurredOn":"2026-03-09"}""")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.transferAmount").exists());
+        send(post("/api/v1/transactions"), """
+                {"type":"TRANSFER","amount":"10","accountId":"a-bank","occurredOn":"2026-03-09"}""")
+            .andExpect(status().is(422)).andExpect(jsonPath("$.error.fieldErrors.transferAccountId").exists());
+
+        // editing a same-currency transfer's amount moves both sides
+        Transaction transfer = tx("t9");
+        transfer.setType(TransactionType.TRANSFER);
+        transfer.setCategory(null);
+        transfer.setTransferAccount(card);
+        transfer.setTransferCurrency("INR");
+        transfer.setTransferAmount(new BigDecimal("500.0000"));
+        when(txRepo.findByIdAndUserIdAndDeletedAtIsNull("t9", USER_ID)).thenReturn(Optional.of(transfer));
+        send(patch("/api/v1/transactions/t9"), "{\"amount\":\"650\"}")
+            .andExpect(jsonPath("$.data.amount").value("650.0000")).andExpect(jsonPath("$.data.transferAmount").value("650.0000"));
+    }
+
+    @Test
+    void editingKeepsTheBookedRateUnlessTheDateMoves() throws Exception {
+        Transaction usd = tx("t7");
+        usd.setAccount(dollars);
+        usd.setCurrency("USD");
+        usd.setCategory(null);
+        usd.setFxRate(new BigDecimal("80.00000000"));
+        usd.setBaseAmount(new BigDecimal("40000.0000"));
+        when(txRepo.findByIdAndUserIdAndDeletedAtIsNull("t7", USER_ID)).thenReturn(Optional.of(usd));
+        send(patch("/api/v1/transactions/t7"), "{\"notes\":\"x\",\"amount\":\"100\"}")
+            .andExpect(jsonPath("$.data.fxRate").value("80.00000000")).andExpect(jsonPath("$.data.baseAmount").value("8000.0000"));
+        when(rateRepo.findEffectiveRate(USER_ID, "USD", "INR", LocalDate.of(2026, 4, 1)))
+                .thenReturn(Optional.of(ExchangeRate.builder().rate(new BigDecimal("85.00000000")).build()));
+        send(patch("/api/v1/transactions/t7"), "{\"occurredOn\":\"2026-04-01\"}")
+            .andExpect(jsonPath("$.data.fxRate").value("85.00000000")).andExpect(jsonPath("$.data.baseAmount").value("8500.0000"));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private ResultActions send(MockHttpServletRequestBuilder req, String json) throws Exception {
@@ -240,11 +352,11 @@ class LedgerApiContractTest extends WebSliceTest {
             java.util.Map.entry("txSameAccount", """
                     {"ok":false,"error":{"code":"SAME_ACCOUNT_TRANSFER","message":"Choose two different accounts"}}"""),
             java.util.Map.entry("accountPatch", """
-                    {"ok":true,"data":{"id":"a-bank","name":"Main","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"5","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"createdAt":"1970-01-01T00:00:00Z","balance":"-245.5000"}}"""),
+                    {"ok":true,"data":{"id":"a-bank","name":"Main","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"5.0000","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"archived":false,"createdAt":"1970-01-01T00:00:00Z","balance":"-245.5000"}}"""),
             java.util.Map.entry("accountArchive", """
-                    {"ok":true,"data":{"id":"a-bank","name":"Main","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"5","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"archivedAt":"%s","createdAt":"1970-01-01T00:00:00Z"}}"""),
+                    {"ok":true,"data":{"id":"a-bank","name":"Main","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"5.0000","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"archived":true,"archivedAt":"%s","createdAt":"1970-01-01T00:00:00Z","balance":"-245.5000"}}"""),
             java.util.Map.entry("accountUnarchive", """
-                    {"ok":true,"data":{"id":"a-card","name":"Card","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"0.0000","isDefault":false,"sortOrder":1,"createdAt":"1970-01-01T00:00:00Z"}}"""),
+                    {"ok":true,"data":{"id":"a-card","name":"Card","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"0.0000","isDefault":false,"sortOrder":1,"archived":false,"createdAt":"1970-01-01T00:00:00Z","balance":"0.0000"}}"""),
             java.util.Map.entry("accountDelete", """
                     {"ok":true,"data":{"id":"a-card"}}"""),
             java.util.Map.entry("accountReorder", """
@@ -256,9 +368,9 @@ class LedgerApiContractTest extends WebSliceTest {
             java.util.Map.entry("txCreateTransfer", """
                     {"ok":true,"data":{"id":"%s","type":"TRANSFER","amount":"10.0000","currency":"USD","baseAmount":"832.5000","baseCurrency":"INR","fxRate":"83.25000000","accountId":"a-usd","accountName":"Dollars","transferAccountId":"a-bank","transferAccountName":"Bank","transferAmount":"830.0000","transferCurrency":"INR","occurredOn":"2026-03-09","source":"MANUAL"}}"""),
             java.util.Map.entry("accountCreate", """
-                    {"ok":true,"data":{"id":"%s","name":"Wallet","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"-12.5","last4":"9876","isDefault":false,"sortOrder":0,"balance":"-12.5"}}"""),
+                    {"ok":true,"data":{"id":"%s","name":"Wallet","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"-12.5000","last4":"9876","isDefault":false,"sortOrder":0,"archived":false,"balance":"-12.5000"}}"""),
             java.util.Map.entry("txCreateExpense", """
-                    {"ok":true,"data":{"id":"%s","type":"EXPENSE","amount":"120.5000","currency":"INR","baseAmount":"120.5000","baseCurrency":"INR","fxRate":"1","accountId":"a-bank","accountName":"Bank","categoryId":"c-food","categoryName":"Food","color":"#ff0000","occurredOn":"2026-03-09","merchant":"Cafe","source":"MANUAL"}}"""),
+                    {"ok":true,"data":{"id":"%s","type":"EXPENSE","amount":"120.5000","currency":"INR","baseAmount":"120.5000","baseCurrency":"INR","fxRate":"1.00000000","accountId":"a-bank","accountName":"Bank","categoryId":"c-food","categoryName":"Food","color":"#ff0000","occurredOn":"2026-03-09","merchant":"Cafe","source":"MANUAL"}}"""),
             java.util.Map.entry("txList", """
                     {"ok":true,"data":{"items":[{"id":"t1","type":"EXPENSE","amount":"500.0000","currency":"INR","baseAmount":"500.0000","baseCurrency":"INR","fxRate":"1.00000000","accountId":"a-bank","accountName":"Bank","categoryId":"c-food","categoryName":"Food","color":"#ff0000","occurredOn":"2026-03-09","merchant":"Cafe","notes":"lunch","source":"MANUAL","createdAt":"1970-01-01T00:00:00Z"},{"id":"t2","type":"TRANSFER","amount":"500.0000","currency":"INR","baseAmount":"500.0000","baseCurrency":"INR","fxRate":"1.00000000","accountId":"a-bank","accountName":"Bank","transferAccountId":"a-usd","transferAccountName":"Dollars","transferAmount":"6.0000","transferCurrency":"USD","occurredOn":"2026-03-09","source":"MANUAL","createdAt":"1970-01-01T00:00:00Z"}],"nextCursor":"t2"}}"""),
             java.util.Map.entry("txGet", """
@@ -266,29 +378,29 @@ class LedgerApiContractTest extends WebSliceTest {
             java.util.Map.entry("txDuplicate", """
                     {"ok":true,"data":{"id":"%s","type":"EXPENSE","amount":"500.0000","currency":"INR","baseAmount":"500.0000","baseCurrency":"INR","fxRate":"1.00000000","accountId":"a-bank","accountName":"Bank","categoryId":"c-food","categoryName":"Food","color":"#ff0000","occurredOn":"2026-04-01","merchant":"Cafe","notes":"lunch","source":"MANUAL"}}"""),
             java.util.Map.entry("txPatch", """
-                    {"ok":true,"data":{"id":"t1","type":"EXPENSE","amount":"750.25","currency":"INR","baseAmount":"750.2500","baseCurrency":"INR","fxRate":"1","accountId":"a-bank","accountName":"Bank","occurredOn":"2026-03-09","merchant":"Cafe","notes":"dinner","source":"MANUAL","createdAt":"1970-01-01T00:00:00Z"}}"""),
+                    {"ok":true,"data":{"id":"t1","type":"EXPENSE","amount":"750.2500","currency":"INR","baseAmount":"750.2500","baseCurrency":"INR","fxRate":"1.00000000","accountId":"a-bank","accountName":"Bank","occurredOn":"2026-03-09","merchant":"Cafe","notes":"dinner","source":"MANUAL","createdAt":"1970-01-01T00:00:00Z"}}"""),
             java.util.Map.entry("txDelete", """
                     {"ok":true,"data":{"id":"t1"}}"""),
             java.util.Map.entry("txMissing", """
                     {"ok":false,"error":{"code":"NOT_FOUND","message":"We couldn't find that transaction"}}"""),
             java.util.Map.entry("accountsList", """
-                    {"ok":true,"data":[{"id":"a-bank","name":"Bank","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"1000.0000","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"createdAt":"1970-01-01T00:00:00Z","balance":"749.5000"},{"id":"a-card","name":"Card","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"0.0000","isDefault":false,"sortOrder":1,"archivedAt":"1970-01-01T00:00:00Z","createdAt":"1970-01-01T00:00:00Z","balance":"0.0000"}]}"""),
+                    {"ok":true,"data":[{"id":"a-bank","name":"Bank","type":"BANK","class":"ASSET","currency":"INR","openingBalance":"1000.0000","institution":"HDFC","last4":"1234","color":"#112233","icon":"bank","isDefault":true,"sortOrder":0,"archived":false,"createdAt":"1970-01-01T00:00:00Z","balance":"749.5000"},{"id":"a-card","name":"Card","type":"CREDIT_CARD","class":"LIABILITY","currency":"INR","openingBalance":"0.0000","isDefault":false,"sortOrder":1,"archived":true,"archivedAt":"1970-01-01T00:00:00Z","createdAt":"1970-01-01T00:00:00Z","balance":"0.0000"}]}"""),
             java.util.Map.entry("categoryCreate", """
-                    {"ok":true,"data":{"id":"%s","name":"Pets","kind":"EXPENSE","icon":"paw","isSystem":false,"sortOrder":0,"parentId":"c-food"}}"""),
+                    {"ok":true,"data":{"id":"%s","name":"Pets","kind":"EXPENSE","icon":"paw","isSystem":false,"sortOrder":0,"parentId":"c-food","archivedAt":null}}"""),
             java.util.Map.entry("categoriesAll", """
-                    {"ok":true,"data":[{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0},{"id":"c-sal","name":"Salary","kind":"INCOME","isSystem":false,"sortOrder":2,"parentId":"c-food","archivedAt":"1970-01-01T00:00:00Z"}]}"""),
+                    {"ok":true,"data":[{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0,"archivedAt":null},{"id":"c-sal","name":"Salary","kind":"INCOME","isSystem":false,"sortOrder":2,"parentId":"c-food","archivedAt":"1970-01-01T00:00:00Z"}]}"""),
             java.util.Map.entry("categoriesActive", """
-                    {"ok":true,"data":[{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0}]}"""),
+                    {"ok":true,"data":[{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0,"archivedAt":null}]}"""),
             java.util.Map.entry("categoriesIncome", """
-                    {"ok":true,"data":[{"id":"c-sal","name":"Salary","kind":"INCOME","isSystem":false,"sortOrder":2,"parentId":"c-food","archivedAt":"1970-01-01T00:00:00Z"}]}"""),
+                    {"ok":true,"data":[]}"""),
             java.util.Map.entry("categoryGet", """
-                    {"ok":true,"data":{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0}}"""),
+                    {"ok":true,"data":{"id":"c-food","name":"Food","kind":"EXPENSE","color":"#ff0000","icon":"restaurant","isSystem":true,"sortOrder":0,"archivedAt":null}}"""),
             java.util.Map.entry("categoryPatch", """
-                    {"ok":true,"data":{"id":"c-food","name":"Eating out","kind":"EXPENSE","color":"#00ff00","icon":"restaurant","isSystem":true,"sortOrder":0}}"""),
+                    {"ok":true,"data":{"id":"c-food","name":"Eating out","kind":"EXPENSE","color":"#00ff00","icon":"restaurant","isSystem":true,"sortOrder":0,"archivedAt":null}}"""),
             java.util.Map.entry("categoryArchive", """
                     {"ok":true,"data":{"id":"c-food","name":"Eating out","kind":"EXPENSE","color":"#00ff00","icon":"restaurant","isSystem":true,"sortOrder":0,"archivedAt":"%s"}}"""),
             java.util.Map.entry("categoryUnarchive", """
-                    {"ok":true,"data":{"id":"c-sal","name":"Salary","kind":"INCOME","isSystem":false,"sortOrder":2,"parentId":"c-food"}}"""),
+                    {"ok":true,"data":{"id":"c-sal","name":"Salary","kind":"INCOME","isSystem":false,"sortOrder":2,"parentId":"c-food","archivedAt":null}}"""),
             java.util.Map.entry("categoryDelete", """
                     {"ok":true,"data":{"id":"c-sal"}}"""),
             java.util.Map.entry("categoryInUse", """

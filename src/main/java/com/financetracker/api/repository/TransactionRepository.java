@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -26,6 +27,27 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     """)
     List<Transaction> findFiltered(String userId, TransactionType type, String accountId,
                                    String categoryId, LocalDate from, LocalDate to, Pageable pageable);
+
+    /**
+     * One page of the ledger, newest first. The three {@code after*} values are the last row of the
+     * previous page (all null for the first page): keyset paging, stable while rows are added.
+     */
+    @Query("""
+        SELECT t FROM Transaction t
+        WHERE t.user.id = :userId AND t.deletedAt IS NULL
+          AND (:type IS NULL OR t.type = :type)
+          AND (:accountId IS NULL OR t.account.id = :accountId OR t.transferAccount.id = :accountId)
+          AND (:categoryId IS NULL OR t.category.id = :categoryId)
+          AND (:from IS NULL OR t.occurredOn >= :from)
+          AND (:to IS NULL OR t.occurredOn <= :to)
+          AND (:afterId IS NULL OR t.occurredOn < :afterDate
+               OR (t.occurredOn = :afterDate AND (t.createdAt < :afterCreatedAt
+                   OR (t.createdAt = :afterCreatedAt AND t.id < :afterId))))
+        ORDER BY t.occurredOn DESC, t.createdAt DESC, t.id DESC
+    """)
+    List<Transaction> findPage(String userId, TransactionType type, String accountId, String categoryId,
+                               LocalDate from, LocalDate to, LocalDate afterDate, Instant afterCreatedAt,
+                               String afterId, Pageable pageable);
 
     @Query("""
         SELECT COALESCE(SUM(CASE WHEN t.type = 'INCOME' THEN t.baseAmount ELSE 0 END), 0),

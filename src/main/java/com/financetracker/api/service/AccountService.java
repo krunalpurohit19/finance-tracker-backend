@@ -1,151 +1,140 @@
 package com.financetracker.api.service;
 
+import com.financetracker.api.dto.account.AccountDtos.*;
 import com.financetracker.api.entity.FinancialAccount;
-import com.financetracker.api.entity.User;
 import com.financetracker.api.entity.enums.AccountClass;
 import com.financetracker.api.entity.enums.AccountType;
 import com.financetracker.api.exception.ApiException;
 import com.financetracker.api.repository.FinancialAccountRepository;
 import com.financetracker.api.repository.TransactionRepository;
+import com.financetracker.api.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.*;
+import java.util.List;
+import java.util.UUID;
 
 @Service
 public class AccountService {
 
+    /** DECIMAL(18,4) zero: "0.0000", not "0". */
+    private static final BigDecimal ZERO = new BigDecimal("0.0000");
+
     private final FinancialAccountRepository accountRepo;
     private final TransactionRepository txRepo;
+    private final UserRepository userRepo;
 
-    public AccountService(FinancialAccountRepository accountRepo, TransactionRepository txRepo) {
+    public AccountService(FinancialAccountRepository accountRepo, TransactionRepository txRepo, UserRepository userRepo) {
         this.accountRepo = accountRepo;
         this.txRepo = txRepo;
+        this.userRepo = userRepo;
     }
 
-    public List<Map<String, Object>> list(String userId, boolean includeArchived) {
+    @Transactional(readOnly = true)
+    public List<AccountResponse> list(String userId, boolean includeArchived) {
         List<FinancialAccount> accounts = includeArchived
                 ? accountRepo.findActiveByUserId(userId)
                 : accountRepo.findActiveNonArchivedByUserId(userId);
-
-        return accounts.stream().map(a -> toMap(a, true)).toList();
+        return accounts.stream().map(this::toResponse).toList();
     }
 
-    public Map<String, Object> get(String userId, String id) {
-        FinancialAccount account = findOrThrow(userId, id);
-        return toMap(account, true);
+    @Transactional(readOnly = true)
+    public AccountResponse get(String userId, String id) {
+        return toResponse(account(userId, id));
     }
 
     @Transactional
-    public Map<String, Object> create(String userId, Map<String, Object> input) {
-        String id = UUID.randomUUID().toString();
-        AccountType type = AccountType.valueOf((String) input.get("type"));
-        AccountClass accountClass = input.containsKey("class")
-                ? AccountClass.valueOf((String) input.get("class"))
-                : (type == AccountType.CREDIT_CARD ? AccountClass.LIABILITY : AccountClass.ASSET);
-
+    public AccountResponse create(String userId, CreateAccountRequest req) {
+        boolean isDefault = Boolean.TRUE.equals(req.isDefault());
+        if (isDefault) clearDefault(userId);
         FinancialAccount account = FinancialAccount.builder()
-                .id(id)
-                .user(User.builder().id(userId).build())
-                .name((String) input.get("name"))
-                .type(type)
-                .accountClass(accountClass)
-                .currency(((String) input.get("currency")).toUpperCase())
-                .openingBalance(new BigDecimal(input.getOrDefault("openingBalance", "0").toString()))
-                .institution((String) input.get("institution"))
-                .last4((String) input.get("last4"))
-                .color((String) input.get("color"))
-                .icon((String) input.get("icon"))
-                .isDefault(Boolean.TRUE.equals(input.get("isDefault")))
+                .id(UUID.randomUUID().toString())
+                .user(userRepo.getReferenceById(userId))
+                .name(req.name())
+                .type(req.type())
+                .accountClass(req.accountClass() != null ? req.accountClass()
+                        : req.type() == AccountType.CREDIT_CARD ? AccountClass.LIABILITY : AccountClass.ASSET)
+                .currency(req.currency())
+                // DECIMAL(18,4); @Digits makes this exact. May be negative (an overdraft, a card balance).
+                .openingBalance(req.openingBalance() != null ? req.openingBalance().setScale(4) : ZERO)
+                .institution(req.institution())
+                .last4(req.last4())
+                .color(req.color())
+                .icon(req.icon())
+                .isDefault(isDefault)
                 .build();
-
         accountRepo.save(account);
-        return toMap(account, true);
+        return AccountResponse.of(account, account.getOpeningBalance()); // no transactions yet
     }
 
     @Transactional
-    public Map<String, Object> update(String userId, String id, Map<String, Object> input) {
-        FinancialAccount account = findOrThrow(userId, id);
+    public AccountResponse update(String userId, String id, UpdateAccountRequest req) {
+        FinancialAccount account = account(userId, id);
+        if (req.name() != null) account.setName(req.name());
+        if (req.type() != null) account.setType(req.type());
+        if (req.accountClass() != null) account.setAccountClass(req.accountClass());
+        if (req.openingBalance() != null) account.setOpeningBalance(req.openingBalance().setScale(4));
+        if (req.institution() != null) account.setInstitution(req.institution());
+        if (req.last4() != null) account.setLast4(req.last4());
+        if (req.color() != null) account.setColor(req.color());
+        if (req.icon() != null) account.setIcon(req.icon());
+        if (req.isDefault() != null) {
+            if (req.isDefault() && !account.isDefault()) clearDefault(userId);
+            account.setDefault(req.isDefault());
+        }
+        return toResponse(account);
+    }
 
-        if (input.containsKey("name")) account.setName((String) input.get("name"));
-        if (input.containsKey("type")) account.setType(AccountType.valueOf((String) input.get("type")));
-        if (input.containsKey("class")) account.setAccountClass(AccountClass.valueOf((String) input.get("class")));
-        if (input.containsKey("openingBalance")) account.setOpeningBalance(new BigDecimal(input.get("openingBalance").toString()));
-        if (input.containsKey("institution")) account.setInstitution((String) input.get("institution"));
-        if (input.containsKey("last4")) account.setLast4((String) input.get("last4"));
-        if (input.containsKey("color")) account.setColor((String) input.get("color"));
-        if (input.containsKey("icon")) account.setIcon((String) input.get("icon"));
-        if (input.containsKey("isDefault")) account.setDefault(Boolean.TRUE.equals(input.get("isDefault")));
-
-        accountRepo.save(account);
-        return toMap(account, true);
+    /** Archiving hides an account from pickers; its history and balance stay. Idempotent. */
+    @Transactional
+    public AccountResponse archive(String userId, String id) {
+        FinancialAccount account = account(userId, id);
+        if (account.getArchivedAt() == null) account.setArchivedAt(Instant.now());
+        return toResponse(account);
     }
 
     @Transactional
-    public Map<String, Object> archive(String userId, String id) {
-        FinancialAccount account = findOrThrow(userId, id);
-        account.setArchivedAt(Instant.now());
-        accountRepo.save(account);
-        return toMap(account, false);
-    }
-
-    @Transactional
-    public Map<String, Object> unarchive(String userId, String id) {
-        FinancialAccount account = findOrThrow(userId, id);
+    public AccountResponse unarchive(String userId, String id) {
+        FinancialAccount account = account(userId, id);
         account.setArchivedAt(null);
-        accountRepo.save(account);
-        return toMap(account, false);
+        return toResponse(account);
     }
 
+    /** Only an account with no transactions can be deleted; otherwise archive it. */
     @Transactional
-    public Map<String, Object> remove(String userId, String id) {
-        FinancialAccount account = findOrThrow(userId, id);
-        long txCount = accountRepo.countTransactionsByAccountId(id) + accountRepo.countTransfersByAccountId(id);
-        if (txCount > 0) {
+    public void remove(String userId, String id) {
+        FinancialAccount account = account(userId, id);
+        if (accountRepo.countTransactionsByAccountId(id) + accountRepo.countTransfersByAccountId(id) > 0) {
             throw ApiException.accountInUse("This account has transactions and cannot be deleted");
         }
         account.setDeletedAt(Instant.now());
-        accountRepo.save(account);
-        return Map.of("id", id);
     }
 
     @Transactional
-    public Map<String, Object> reorder(String userId, List<String> orderedIds) {
-        for (int i = 0; i < orderedIds.size(); i++) {
-            FinancialAccount account = findOrThrow(userId, orderedIds.get(i));
-            account.setSortOrder(i);
-            accountRepo.save(account);
-        }
-        return Map.of("reordered", orderedIds.size());
+    public Reordered reorder(String userId, List<String> orderedIds) {
+        for (int i = 0; i < orderedIds.size(); i++) account(userId, orderedIds.get(i)).setSortOrder(i);
+        return new Reordered(orderedIds.size());
     }
 
-    private FinancialAccount findOrThrow(String userId, String id) {
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    /** At most one default account per user. */
+    private void clearDefault(String userId) {
+        for (FinancialAccount a : accountRepo.findActiveByUserId(userId)) {
+            if (a.isDefault()) a.setDefault(false);
+        }
+    }
+
+    private FinancialAccount account(String userId, String id) {
         return accountRepo.findByIdAndUserIdAndDeletedAtIsNull(id, userId)
                 .orElseThrow(() -> ApiException.notFound("We couldn't find that account"));
     }
 
-    private Map<String, Object> toMap(FinancialAccount a, boolean includeBalance) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", a.getId());
-        m.put("name", a.getName());
-        m.put("type", a.getType().name());
-        m.put("class", a.getAccountClass().name());
-        m.put("currency", a.getCurrency());
-        m.put("openingBalance", a.getOpeningBalance().toPlainString());
-        m.put("institution", a.getInstitution());
-        m.put("last4", a.getLast4());
-        m.put("color", a.getColor());
-        m.put("icon", a.getIcon());
-        m.put("isDefault", a.isDefault());
-        m.put("sortOrder", a.getSortOrder());
-        m.put("archivedAt", a.getArchivedAt());
-        m.put("createdAt", a.getCreatedAt());
-        if (includeBalance) {
-            BigDecimal movement = txRepo.computeAccountMovement(a.getId());
-            m.put("balance", a.getOpeningBalance().add(movement != null ? movement : BigDecimal.ZERO).toPlainString());
-        }
-        return m;
+    // ponytail: one movement SUM per account; a GROUP BY account query if someone has dozens of accounts.
+    private AccountResponse toResponse(FinancialAccount a) {
+        BigDecimal movement = txRepo.computeAccountMovement(a.getId());
+        return AccountResponse.of(a, a.getOpeningBalance().add(movement != null ? movement : ZERO));
     }
 }

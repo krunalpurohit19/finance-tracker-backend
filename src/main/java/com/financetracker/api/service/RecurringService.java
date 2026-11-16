@@ -167,7 +167,8 @@ public class RecurringService {
      */
     @Transactional
     public GenerationResult generate(String userId) {
-        UserSettings settings = settingsRepo.findById(userId)
+        // FOR SHARE, and first: generated transactions carry base amounts (see UserSettingsRepository).
+        UserSettings settings = settingsRepo.findForShare(userId)
                 .orElseThrow(() -> ApiException.notFound("Settings not found"));
         LocalDate today = UserDates.today(clock, settings);
         List<RecurringTransaction> due = recurringRepo.findDue(userId, today); // row-locked: see findDue

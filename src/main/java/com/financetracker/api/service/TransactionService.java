@@ -1,10 +1,21 @@
 package com.financetracker.api.service;
 
-import com.financetracker.api.entity.*;
+import com.financetracker.api.dto.transaction.TransactionDtos.*;
+import com.financetracker.api.entity.Category;
+import com.financetracker.api.entity.ExchangeRate;
+import com.financetracker.api.entity.FinancialAccount;
+import com.financetracker.api.entity.Transaction;
+import com.financetracker.api.entity.UserSettings;
+import com.financetracker.api.entity.enums.CategoryKind;
 import com.financetracker.api.entity.enums.TransactionSource;
 import com.financetracker.api.entity.enums.TransactionType;
 import com.financetracker.api.exception.ApiException;
-import com.financetracker.api.repository.*;
+import com.financetracker.api.repository.CategoryRepository;
+import com.financetracker.api.repository.ExchangeRateRepository;
+import com.financetracker.api.repository.FinancialAccountRepository;
+import com.financetracker.api.repository.TransactionRepository;
+import com.financetracker.api.repository.UserRepository;
+import com.financetracker.api.repository.UserSettingsRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,8 +24,14 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
+/**
+ * The ledger. One row per transaction; a transfer is ONE row with two accounts (never an expense).
+ * Amounts are positive, in the account's currency; baseAmount is the same money in the base currency.
+ */
 @Service
 public class TransactionService {
 
@@ -23,142 +40,138 @@ public class TransactionService {
     private final CategoryRepository categoryRepo;
     private final ExchangeRateRepository rateRepo;
     private final UserSettingsRepository settingsRepo;
+    private final UserRepository userRepo;
 
     public TransactionService(TransactionRepository txRepo, FinancialAccountRepository accountRepo,
-                               CategoryRepository categoryRepo, ExchangeRateRepository rateRepo,
-                               UserSettingsRepository settingsRepo) {
+                              CategoryRepository categoryRepo, ExchangeRateRepository rateRepo,
+                              UserSettingsRepository settingsRepo, UserRepository userRepo) {
         this.txRepo = txRepo;
         this.accountRepo = accountRepo;
         this.categoryRepo = categoryRepo;
         this.rateRepo = rateRepo;
         this.settingsRepo = settingsRepo;
+        this.userRepo = userRepo;
     }
 
+    /**
+     * Newest first, {@code limit} per page. {@code cursor} is the previous page's nextCursor (the id of
+     * its last row); the page continues strictly after that row, so rows added meanwhile never repeat.
+     */
     @Transactional(readOnly = true)
-    public Map<String, Object> list(String userId, Map<String, String> query) {
-        TransactionType type = query.containsKey("type") ? TransactionType.valueOf(query.get("type")) : null;
-        String accountId = query.get("accountId");
-        String categoryId = query.get("categoryId");
-        LocalDate from = query.containsKey("from") ? LocalDate.parse(query.get("from")) : null;
-        LocalDate to = query.containsKey("to") ? LocalDate.parse(query.get("to")) : null;
-        int limit = query.containsKey("limit") ? Integer.parseInt(query.get("limit")) : 50;
-
-        List<Transaction> txs = txRepo.findFiltered(userId, type, accountId, categoryId, from, to,
-                PageRequest.of(0, limit + 1));
-
-        boolean hasMore = txs.size() > limit;
-        List<Transaction> page = hasMore ? txs.subList(0, limit) : txs;
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("items", page.stream().map(this::toMap).toList());
-        if (hasMore) {
-            result.put("nextCursor", page.getLast().getId());
+    public TransactionPage list(String userId, TransactionType type, String accountId, String categoryId,
+                                LocalDate from, LocalDate to, String cursor, int limit) {
+        Transaction after = null;
+        if (cursor != null) {
+            // Deliberately not filtered on deletedAt: deleting the last row of a page must not break paging.
+            after = txRepo.findById(cursor).filter(t -> t.getUser().getId().equals(userId))
+                    .orElseThrow(() -> invalid("cursor", "Invalid value"));
         }
-        return result;
+        List<Transaction> rows = txRepo.findPage(userId, type, accountId, categoryId, from, to,
+                after != null ? after.getOccurredOn() : null, after != null ? after.getCreatedAt() : null,
+                after != null ? after.getId() : null, PageRequest.of(0, limit + 1));
+        boolean hasMore = rows.size() > limit;
+        List<Transaction> page = hasMore ? rows.subList(0, limit) : rows;
+        return new TransactionPage(page.stream().map(TransactionResponse::of).toList(),
+                hasMore ? page.getLast().getId() : null);
     }
 
     @Transactional(readOnly = true)
-    public Map<String, Object> get(String userId, String id) {
-        return toMap(findOrThrow(userId, id));
+    public TransactionResponse get(String userId, String id) {
+        return TransactionResponse.of(transaction(userId, id));
     }
 
     @Transactional
-    public Map<String, Object> create(String userId, Map<String, Object> input) {
-        TransactionType type = TransactionType.valueOf((String) input.get("type"));
-        String accountId = (String) input.get("accountId");
-        FinancialAccount account = accountRepo.findByIdAndUserIdAndDeletedAtIsNull(accountId, userId)
-                .orElseThrow(() -> ApiException.notFound("Account not found"));
-
-        if (account.getArchivedAt() != null) {
-            throw ApiException.accountArchived("That account is archived");
-        }
-
-        UserSettings settings = settingsRepo.findById(userId).orElseThrow();
-        BigDecimal amount = new BigDecimal((String) input.get("amount"));
-        String currency = account.getCurrency();
-        BigDecimal fxRate = resolveFxRate(userId, currency, settings.getBaseCurrency(),
-                (String) input.get("fxRate"), LocalDate.parse((String) input.get("occurredOn")));
-        BigDecimal baseAmount = amount.multiply(fxRate).setScale(4, RoundingMode.HALF_UP);
+    public TransactionResponse create(String userId, CreateTransactionRequest req) {
+        // FOR SHARE, and first: a base-currency change (FOR UPDATE) waits for this insert, then sees it.
+        UserSettings settings = settingsForShare(userId);
+        FinancialAccount account = usableAccount(userId, req.accountId(), "Account not found");
+        BigDecimal amount = req.amount().setScale(4); // DECIMAL(18,4); @Digits makes this exact
+        BigDecimal fxRate = req.fxRate() != null ? req.fxRate()
+                : fxRate(userId, account.getCurrency(), settings.getBaseCurrency(), req.occurredOn());
 
         Transaction tx = Transaction.builder()
                 .id(UUID.randomUUID().toString())
-                .user(User.builder().id(userId).build())
-                .type(type)
+                .user(userRepo.getReferenceById(userId))
+                .type(req.type())
                 .amount(amount)
-                .currency(currency)
-                .baseAmount(baseAmount)
+                .currency(account.getCurrency())
+                .baseAmount(baseAmount(amount, fxRate))
                 .baseCurrency(settings.getBaseCurrency())
                 .fxRate(fxRate)
                 .account(account)
-                .occurredOn(LocalDate.parse((String) input.get("occurredOn")))
-                .merchant((String) input.get("merchant"))
-                .notes((String) input.get("notes"))
+                .occurredOn(req.occurredOn())
+                .merchant(req.merchant())
+                .notes(req.notes())
                 .source(TransactionSource.MANUAL)
                 .build();
 
-        if (type == TransactionType.TRANSFER) {
-            String transferAccountId = (String) input.get("transferAccountId");
-            if (accountId.equals(transferAccountId)) throw ApiException.sameAccountTransfer();
-            FinancialAccount transferAccount = accountRepo.findByIdAndUserIdAndDeletedAtIsNull(transferAccountId, userId)
-                    .orElseThrow(() -> ApiException.notFound("Transfer account not found"));
-            tx.setTransferAccount(transferAccount);
-            tx.setTransferCurrency(transferAccount.getCurrency());
-            if (input.containsKey("transferAmount")) {
-                tx.setTransferAmount(new BigDecimal((String) input.get("transferAmount")));
-            } else {
-                tx.setTransferAmount(amount);
-            }
+        if (req.type() == TransactionType.TRANSFER) {
+            if (req.transferAccountId() == null) throw invalid("transferAccountId", "Choose a destination account");
+            if (req.transferAccountId().equals(req.accountId())) throw ApiException.sameAccountTransfer();
+            if (req.categoryId() != null) throw invalid("categoryId", "Transfers don't have a category");
+            FinancialAccount to = usableAccount(userId, req.transferAccountId(), "Transfer account not found");
+            tx.setTransferAccount(to);
+            tx.setTransferCurrency(to.getCurrency());
+            tx.setTransferAmount(received(userId, amount, account, to, req.transferAmount(), req.occurredOn()));
         } else {
-            String categoryId = (String) input.get("categoryId");
-            if (categoryId != null) {
-                Category cat = categoryRepo.findByIdAndUserIdAndDeletedAtIsNull(categoryId, userId)
-                        .orElseThrow(() -> ApiException.notFound("Category not found"));
-                tx.setCategory(cat);
+            if (req.transferAccountId() != null) {
+                throw invalid("transferAccountId", "Only transfers have a destination account");
             }
+            if (req.categoryId() != null) tx.setCategory(category(userId, req.categoryId(), req.type()));
+        }
+        txRepo.save(tx);
+        return TransactionResponse.of(tx);
+    }
+
+    @Transactional
+    public TransactionResponse update(String userId, String id, UpdateTransactionRequest req) {
+        UserSettings settings = settingsForShare(userId);
+        Transaction tx = transaction(userId, id);
+        boolean transfer = tx.getType() == TransactionType.TRANSFER;
+
+        if (req.getMerchant() != null) tx.setMerchant(req.getMerchant());
+        if (req.getNotes() != null) tx.setNotes(req.getNotes());
+        if (req.getCategoryId() != null) {
+            if (transfer && req.getCategoryId().isPresent()) throw invalid("categoryId", "Transfers don't have a category");
+            tx.setCategory(req.getCategoryId().map(c -> category(userId, c, tx.getType())).orElse(null));
         }
 
-        txRepo.save(tx);
-        return toMap(tx);
-    }
-
-    @Transactional
-    public Map<String, Object> update(String userId, String id, Map<String, Object> input) {
-        Transaction tx = findOrThrow(userId, id);
-
-        if (input.containsKey("amount")) tx.setAmount(new BigDecimal((String) input.get("amount")));
-        if (input.containsKey("occurredOn")) tx.setOccurredOn(LocalDate.parse((String) input.get("occurredOn")));
-        if (input.containsKey("merchant")) tx.setMerchant((String) input.get("merchant"));
-        if (input.containsKey("notes")) tx.setNotes((String) input.get("notes"));
-        if (input.containsKey("categoryId")) {
-            String catId = (String) input.get("categoryId");
-            tx.setCategory(catId != null ? categoryRepo.findByIdAndUserIdAndDeletedAtIsNull(catId, userId).orElse(null) : null);
+        boolean dateChanged = req.getOccurredOn() != null && !req.getOccurredOn().equals(tx.getOccurredOn());
+        if (req.getOccurredOn() != null) tx.setOccurredOn(req.getOccurredOn());
+        if (req.getAmount() != null) {
+            BigDecimal amount = req.getAmount().setScale(4);
+            // A same-currency transfer moves one amount; keeping the old received amount would unbalance it.
+            if (transfer && tx.getCurrency().equals(tx.getTransferCurrency())) tx.setTransferAmount(amount);
+            tx.setAmount(amount);
         }
-
-        // Recompute base amount if amount or fxRate changed
-        UserSettings settings = settingsRepo.findById(userId).orElseThrow();
-        BigDecimal fxRate = resolveFxRate(userId, tx.getCurrency(), settings.getBaseCurrency(),
-                (String) input.get("fxRate"), tx.getOccurredOn());
-        tx.setFxRate(fxRate);
-        tx.setBaseAmount(tx.getAmount().multiply(fxRate).setScale(4, RoundingMode.HALF_UP));
-
-        txRepo.save(tx);
-        return toMap(tx);
+        // The rate the transaction was booked at stays, unless a new one is given or the date moved.
+        if (req.getFxRate() != null) {
+            tx.setFxRate(req.getFxRate());
+        } else if (dateChanged && !tx.getCurrency().equals(tx.getBaseCurrency())) {
+            tx.setFxRate(fxRate(userId, tx.getCurrency(), settings.getBaseCurrency(), tx.getOccurredOn()));
+        }
+        tx.setBaseAmount(baseAmount(tx.getAmount(), tx.getFxRate()));
+        return TransactionResponse.of(tx);
     }
 
     @Transactional
-    public Map<String, Object> remove(String userId, String id) {
-        Transaction tx = findOrThrow(userId, id);
-        tx.setDeletedAt(Instant.now());
-        txRepo.save(tx);
-        return Map.of("id", id);
+    public void remove(String userId, String id) {
+        transaction(userId, id).setDeletedAt(Instant.now());
     }
 
+    /** A copy dated {@code occurredOn} (default: the original's date), always MANUAL and unlinked from any rule. */
     @Transactional
-    public Map<String, Object> duplicate(String userId, String id, String occurredOn) {
-        Transaction src = findOrThrow(userId, id);
+    public TransactionResponse duplicate(String userId, String id, LocalDate occurredOn) {
+        settingsForShare(userId);
+        Transaction src = transaction(userId, id);
+        if (src.getAccount().getArchivedAt() != null
+                || src.getTransferAccount() != null && src.getTransferAccount().getArchivedAt() != null) {
+            throw ApiException.accountArchived("That account is archived");
+        }
+        Category category = src.getCategory();
         Transaction dup = Transaction.builder()
                 .id(UUID.randomUUID().toString())
-                .user(src.getUser())
+                .user(userRepo.getReferenceById(userId))
                 .type(src.getType())
                 .amount(src.getAmount())
                 .currency(src.getCurrency())
@@ -169,56 +182,73 @@ public class TransactionService {
                 .transferAccount(src.getTransferAccount())
                 .transferAmount(src.getTransferAmount())
                 .transferCurrency(src.getTransferCurrency())
-                .category(src.getCategory())
-                .occurredOn(occurredOn != null ? LocalDate.parse(occurredOn) : src.getOccurredOn())
+                .category(category != null && category.getDeletedAt() == null ? category : null)
+                .occurredOn(occurredOn != null ? occurredOn : src.getOccurredOn())
                 .merchant(src.getMerchant())
                 .notes(src.getNotes())
                 .source(TransactionSource.MANUAL)
                 .build();
         txRepo.save(dup);
-        return toMap(dup);
+        return TransactionResponse.of(dup);
     }
 
-    private Transaction findOrThrow(String userId, String id) {
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    private static BigDecimal baseAmount(BigDecimal amount, BigDecimal fxRate) {
+        return amount.multiply(fxRate).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    /** The rate in force on {@code on}; never guessed: 1 would book $100 as ₹100. */
+    private BigDecimal fxRate(String userId, String from, String to, LocalDate on) {
+        if (from.equals(to)) return BigDecimal.ONE.setScale(8); // DECIMAL(18,8), as stored
+        return rateRepo.findEffectiveRate(userId, from, to, on).map(ExchangeRate::getRate)
+                .orElseThrow(() -> ApiException.missingExchangeRate(
+                        "Set an exchange rate for " + from + " → " + to + " before recording this transaction"));
+    }
+
+    /**
+     * What arrives in the destination account. Same currency: the amount sent. Different currencies:
+     * the amount the user entered, else converted at the saved rate — never the same number relabelled.
+     */
+    private BigDecimal received(String userId, BigDecimal amount, FinancialAccount from, FinancialAccount to,
+                                BigDecimal entered, LocalDate on) {
+        if (from.getCurrency().equals(to.getCurrency())) return amount;
+        if (entered != null) return entered.setScale(4);
+        BigDecimal rate = rateRepo.findEffectiveRate(userId, from.getCurrency(), to.getCurrency(), on)
+                .map(ExchangeRate::getRate)
+                .orElseThrow(() -> invalid("transferAmount",
+                        "Enter the amount received in " + to.getCurrency()));
+        return amount.multiply(rate).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private UserSettings settingsForShare(String userId) {
+        return settingsRepo.findForShare(userId).orElseThrow(() -> ApiException.notFound("Settings not found"));
+    }
+
+    private FinancialAccount usableAccount(String userId, String accountId, String notFound) {
+        FinancialAccount a = accountRepo.findByIdAndUserIdAndDeletedAtIsNull(accountId, userId)
+                .orElseThrow(() -> ApiException.notFound(notFound));
+        if (a.getArchivedAt() != null) throw ApiException.accountArchived("That account is archived");
+        return a;
+    }
+
+    private Category category(String userId, String categoryId, TransactionType type) {
+        Category c = categoryRepo.findByIdAndUserIdAndDeletedAtIsNull(categoryId, userId)
+                .orElseThrow(() -> ApiException.notFound("Category not found"));
+        CategoryKind expected = type == TransactionType.INCOME ? CategoryKind.INCOME : CategoryKind.EXPENSE;
+        if (c.getKind() != expected) {
+            throw invalid("categoryId", type == TransactionType.INCOME
+                    ? "Choose an income category" : "Choose an expense category");
+        }
+        return c;
+    }
+
+    private Transaction transaction(String userId, String id) {
         return txRepo.findByIdAndUserIdAndDeletedAtIsNull(id, userId)
                 .orElseThrow(() -> ApiException.notFound("We couldn't find that transaction"));
     }
 
-    private BigDecimal resolveFxRate(String userId, String fromCurrency, String baseCurrency,
-                                     String explicitRate, LocalDate asOf) {
-        if (explicitRate != null) return new BigDecimal(explicitRate);
-        if (fromCurrency.equals(baseCurrency)) return BigDecimal.ONE;
-
-        return rateRepo.findEffectiveRate(userId, fromCurrency, baseCurrency, asOf)
-                .map(ExchangeRate::getRate)
-                .orElseThrow(() -> ApiException.missingExchangeRate(
-                        "Set an exchange rate for " + fromCurrency + " → " + baseCurrency + " before recording this transaction"));
-    }
-
-    private Map<String, Object> toMap(Transaction tx) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", tx.getId());
-        m.put("type", tx.getType().name());
-        m.put("amount", tx.getAmount().toPlainString());
-        m.put("currency", tx.getCurrency());
-        m.put("baseAmount", tx.getBaseAmount().toPlainString());
-        m.put("baseCurrency", tx.getBaseCurrency());
-        m.put("fxRate", tx.getFxRate().toPlainString());
-        m.put("accountId", tx.getAccount().getId());
-        m.put("accountName", tx.getAccount().getName());
-        m.put("transferAccountId", tx.getTransferAccount() != null ? tx.getTransferAccount().getId() : null);
-        m.put("transferAccountName", tx.getTransferAccount() != null ? tx.getTransferAccount().getName() : null);
-        m.put("transferAmount", tx.getTransferAmount() != null ? tx.getTransferAmount().toPlainString() : null);
-        m.put("transferCurrency", tx.getTransferCurrency());
-        m.put("categoryId", tx.getCategory() != null ? tx.getCategory().getId() : null);
-        m.put("categoryName", tx.getCategory() != null ? tx.getCategory().getName() : null);
-        m.put("color", tx.getCategory() != null ? tx.getCategory().getColor() : null);
-        m.put("occurredOn", tx.getOccurredOn().toString());
-        m.put("merchant", tx.getMerchant());
-        m.put("notes", tx.getNotes());
-        m.put("source", tx.getSource().name());
-        m.put("recurringId", tx.getRecurring() != null ? tx.getRecurring().getId() : null);
-        m.put("createdAt", tx.getCreatedAt());
-        return m;
+    private static ApiException invalid(String field, String message) {
+        return ApiException.validationFailed(message, Map.of(field, List.of(message)));
     }
 }

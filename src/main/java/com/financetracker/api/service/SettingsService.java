@@ -81,14 +81,13 @@ public class SettingsService {
      */
     @Transactional
     public BaseCurrencyChanged changeBaseCurrency(String userId, ChangeBaseCurrencyRequest req) {
-        UserSettings s = settings(userId);
+        // FOR UPDATE: waits for transactions being written right now (they hold it FOR SHARE), then counts them.
+        UserSettings s = settingsRepo.findForUpdate(userId).orElseThrow(() -> ApiException.notFound("Settings not found"));
         String from = s.getBaseCurrency();
         String to = req.baseCurrency();
         if (!from.equals(to)) {
             // ponytail: refuses instead of repricing; repricing history needs a rate for every pair and date
             // (product decision pending), at which point `repriced` becomes a real count.
-            // ponytail: count-then-update is not locked against a transaction created at the same instant on
-            // another device; closing it needs writers to read settings FOR SHARE (Transactions module).
             long denominated = userRepo.countTransactions(userId) + userRepo.countBudgets(userId) + userRepo.countGoals(userId);
             if (denominated > 0) {
                 throw ApiException.conflict(

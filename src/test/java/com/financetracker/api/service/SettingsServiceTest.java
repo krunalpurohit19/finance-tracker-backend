@@ -47,6 +47,7 @@ class SettingsServiceTest {
     void setUp() {
         settings = UserSettings.builder().userId(USER).build();
         lenient().when(settingsRepo.findById(USER)).thenReturn(Optional.of(settings));
+        lenient().when(settingsRepo.findForUpdate(USER)).thenReturn(Optional.of(settings));
     }
 
     // ── base currency guard ──

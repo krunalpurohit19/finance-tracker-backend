@@ -160,7 +160,7 @@ public class AuthService {
     }
 
     private Category buildSystemCategory(String userId, String name, String icon, CategoryKind kind, int sortOrder) {
-        User userRef = User.builder().id(userId).build();
+        User userRef = userRepository.getReferenceById(userId);
         return Category.builder()
                 .id(UUID.randomUUID().toString())
                 .user(userRef)

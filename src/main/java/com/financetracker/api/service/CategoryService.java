@@ -1,112 +1,105 @@
 package com.financetracker.api.service;
 
+import com.financetracker.api.dto.category.CategoryDtos.*;
 import com.financetracker.api.entity.Category;
-import com.financetracker.api.entity.User;
 import com.financetracker.api.entity.enums.CategoryKind;
 import com.financetracker.api.exception.ApiException;
 import com.financetracker.api.repository.CategoryRepository;
+import com.financetracker.api.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class CategoryService {
 
     private final CategoryRepository categoryRepo;
+    private final UserRepository userRepo;
 
-    public CategoryService(CategoryRepository categoryRepo) {
+    public CategoryService(CategoryRepository categoryRepo, UserRepository userRepo) {
         this.categoryRepo = categoryRepo;
+        this.userRepo = userRepo;
     }
 
-    public List<Map<String, Object>> list(String userId, String kindFilter, boolean includeArchived) {
-        List<Category> categories;
-        if (kindFilter != null) {
-            categories = categoryRepo.findActiveByUserIdAndKind(userId, CategoryKind.valueOf(kindFilter));
-        } else if (includeArchived) {
-            categories = categoryRepo.findActiveByUserId(userId);
-        } else {
-            categories = categoryRepo.findActiveByUserId(userId).stream()
-                    .filter(c -> c.getArchivedAt() == null).toList();
-        }
-        return categories.stream().map(this::toMap).toList();
+    /** Archived categories are left out unless asked for; {@code kind} null = both kinds. */
+    @Transactional(readOnly = true)
+    public List<CategoryResponse> list(String userId, CategoryKind kind, boolean includeArchived) {
+        return categoryRepo.findActiveByUserId(userId).stream()
+                .filter(c -> kind == null || c.getKind() == kind)
+                .filter(c -> includeArchived || c.getArchivedAt() == null)
+                .map(CategoryResponse::of).toList();
     }
 
-    public Map<String, Object> get(String userId, String id) {
-        return toMap(findOrThrow(userId, id));
+    @Transactional(readOnly = true)
+    public CategoryResponse get(String userId, String id) {
+        return CategoryResponse.of(category(userId, id));
     }
 
     @Transactional
-    public Map<String, Object> create(String userId, Map<String, Object> input) {
+    public CategoryResponse create(String userId, CreateCategoryRequest req) {
         Category cat = Category.builder()
                 .id(UUID.randomUUID().toString())
-                .user(User.builder().id(userId).build())
-                .name((String) input.get("name"))
-                .kind(CategoryKind.valueOf((String) input.get("kind")))
-                .color((String) input.get("color"))
-                .icon((String) input.get("icon"))
+                .user(userRepo.getReferenceById(userId))
+                .name(req.name())
+                .kind(req.kind())
+                .color(req.color())
+                .icon(req.icon())
                 .build();
-        if (input.containsKey("parentId")) {
-            cat.setParent(findOrThrow(userId, (String) input.get("parentId")));
+        if (req.parentId() != null) {
+            Category parent = categoryRepo.findByIdAndUserIdAndDeletedAtIsNull(req.parentId(), userId)
+                    .orElseThrow(() -> invalid("parentId", "We couldn't find that parent category"));
+            if (parent.getKind() != req.kind()) throw invalid("parentId", "The parent must be the same kind of category");
+            if (parent.getParent() != null) throw invalid("parentId", "Categories can only be nested one level");
+            cat.setParent(parent);
         }
         categoryRepo.save(cat);
-        return toMap(cat);
+        return CategoryResponse.of(cat);
     }
 
     @Transactional
-    public Map<String, Object> update(String userId, String id, Map<String, Object> input) {
-        Category cat = findOrThrow(userId, id);
-        if (input.containsKey("name")) cat.setName((String) input.get("name"));
-        if (input.containsKey("color")) cat.setColor((String) input.get("color"));
-        if (input.containsKey("icon")) cat.setIcon((String) input.get("icon"));
-        categoryRepo.save(cat);
-        return toMap(cat);
+    public CategoryResponse update(String userId, String id, UpdateCategoryRequest req) {
+        Category cat = category(userId, id);
+        if (req.name() != null) cat.setName(req.name());
+        if (req.color() != null) cat.setColor(req.color());
+        if (req.icon() != null) cat.setIcon(req.icon());
+        return CategoryResponse.of(cat);
+    }
+
+    /** Archiving hides a category from pickers; past transactions keep it. Idempotent. */
+    @Transactional
+    public CategoryResponse archive(String userId, String id) {
+        Category cat = category(userId, id);
+        if (cat.getArchivedAt() == null) cat.setArchivedAt(Instant.now());
+        return CategoryResponse.of(cat);
     }
 
     @Transactional
-    public Map<String, Object> archive(String userId, String id) {
-        Category cat = findOrThrow(userId, id);
-        cat.setArchivedAt(Instant.now());
-        categoryRepo.save(cat);
-        return toMap(cat);
-    }
-
-    @Transactional
-    public Map<String, Object> unarchive(String userId, String id) {
-        Category cat = findOrThrow(userId, id);
+    public CategoryResponse unarchive(String userId, String id) {
+        Category cat = category(userId, id);
         cat.setArchivedAt(null);
-        categoryRepo.save(cat);
-        return toMap(cat);
+        return CategoryResponse.of(cat);
     }
 
+    /** Only an unused category can be deleted; otherwise archive it. */
     @Transactional
-    public Map<String, Object> remove(String userId, String id) {
-        Category cat = findOrThrow(userId, id);
+    public void remove(String userId, String id) {
+        Category cat = category(userId, id);
         if (categoryRepo.countTransactionsByCategoryId(id) > 0 || categoryRepo.countBudgetsByCategoryId(id) > 0) {
             throw ApiException.categoryInUse("This category is still used by transactions or budgets");
         }
         cat.setDeletedAt(Instant.now());
-        categoryRepo.save(cat);
-        return Map.of("id", id);
     }
 
-    private Category findOrThrow(String userId, String id) {
+    private Category category(String userId, String id) {
         return categoryRepo.findByIdAndUserIdAndDeletedAtIsNull(id, userId)
                 .orElseThrow(() -> ApiException.notFound("We couldn't find that category"));
     }
 
-    private Map<String, Object> toMap(Category c) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", c.getId());
-        m.put("name", c.getName());
-        m.put("kind", c.getKind().name());
-        m.put("color", c.getColor());
-        m.put("icon", c.getIcon());
-        m.put("isSystem", c.isSystem());
-        m.put("sortOrder", c.getSortOrder());
-        m.put("parentId", c.getParent() != null ? c.getParent().getId() : null);
-        m.put("archivedAt", c.getArchivedAt());
-        return m;
+    private static ApiException invalid(String field, String message) {
+        return ApiException.validationFailed(message, Map.of(field, List.of(message)));
     }
 }

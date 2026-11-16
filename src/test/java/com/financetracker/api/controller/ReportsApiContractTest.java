@@ -17,7 +17,9 @@ import com.financetracker.api.repository.UserSettingsRepository;
 import com.financetracker.api.support.WebSliceTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.financetracker.api.service.ReportService;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
 
@@ -37,7 +39,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Pins the JSON contract of the three read-only reports: /dashboard, /analytics and /net-worth.
  * Bodies are compared STRICTLY. A fixed custom period keeps "today" out of the expected JSON.
  */
-@WebMvcTest({DashboardController.class, AnalyticsController.class, NetWorthController.class})
+@WebMvcTest(ReportController.class)
+@Import(ReportService.class)
 class ReportsApiContractTest extends WebSliceTest {
 
     static final LocalDate FROM = LocalDate.of(2026, 3, 1);

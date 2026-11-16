@@ -92,6 +92,20 @@ public class GlobalExceptionHandler {
         return invalid(req, ex, VALIDATION_MESSAGE, Map.of(ex.getParameterName(), List.of("Required")));
     }
 
+    /** Two devices changed the same row (@Version): the loser reloads and retries. */
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiEnvelope.Error> handleStale(Exception ex, HttpServletRequest req) {
+        log.warn("409 {} {} (stale version)", req.getMethod(), req.getRequestURI());
+        return error(409, "CONFLICT", "This was changed somewhere else. Refresh and try again.", null);
+    }
+
+    /** A unique key or CHECK constraint refused the write, usually two identical requests racing. */
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<ApiEnvelope.Error> handleIntegrity(Exception ex, HttpServletRequest req) {
+        log.warn("409 {} {} ({})", req.getMethod(), req.getRequestURI(), ex.getClass().getSimpleName());
+        return error(409, "CONFLICT", "That conflicts with something already saved. Refresh and try again.", null);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiEnvelope.Error> handleUnexpected(Exception ex, HttpServletRequest req) {
         // Spring MVC's own exceptions (404 no route, 405, 415, missing header, ...) carry their status; keep it,

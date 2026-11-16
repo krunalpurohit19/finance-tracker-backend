@@ -63,6 +63,14 @@ public class Category {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * Optimistic lock: two devices editing the same row — the second save fails with 409 instead of
+     * silently overwriting the first. A wrapper type, so a new (null-version) entity is INSERTed without
+     * a SELECT first.
+     */
+    @Version
+    private Long version;
+
     @PrePersist
     protected void onCreate() {
         Instant now = Instant.now();
